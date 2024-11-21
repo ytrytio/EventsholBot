@@ -1,42 +1,40 @@
 #!/usr/bin/env python3
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.typesmport import Message
-from aiogram.filters import Command
+from aiogram.types import (Message, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery,
+                           CallbackQuery)
+from aiogram.utils.markdown import hbold, hlink
 
+from babel.numbers import get_currency_symbol
 from asyncio import run as async_run
+from asyncio import sleep as asleep
 from time import time as unixtime
 from dotenv import dotenv_values
-from applib import logf, with_db
-from pathlib import Path
+from applib.strings import *
+from applib import *
+from aiopg import Cursor
+from random import randint
 from typing import Dict
-from uuid import uuid4
-from json import loads
 
 from os import environ
-from dialogflow import SessionsClient
+from google.cloud import dialogflow
 from google.api_core.exceptions import InvalidArgument
+from google.oauth2 import service_account
 
-
-with open(Path(__file__).parent/'dialog_flow.json') as f:
-    environ["GOOGLE_APPLICATION_CREDENTIALS"] = "dialog_flow.json"
-
-    DIALOGFLOW_PROJECT_ID = "project_id"
-    DIALOGFLOW_LANGUAGE_CODE = '[LANGUAGE]'
+with open(dialog_flow_file) as f:
+    environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(dialog_flow_file)
+    DIALOGFLOW_PROJECT_ID = "small-talk-rwvf"
+    DIALOGFLOW_LANGUAGE_CODE = 'ru'
     SESSION_ID = 'me'
+credentials = service_account.Credentials.from_service_account_file(dialog_flow_file)
 
+sessionClient = dialogflow.SessionsClient(credentials=credentials)
 
-session_client = SessionsClient()
-
-
-secrets: Dict[str, str] = dotenv_values('.env')
-TOKEN: str = secrets["BOT_TOKEN"]
+secrets: Dict[str, str | None] = dotenv_values('.env')
+TOKEN: str = secrets["BOT_TOKEN"]  # type: ignore
 
 bot: Bot = Bot(TOKEN)
 dp = Dispatcher(bot=bot)
-
-
-
 
 # TelegramBot = require('node-telegram-bot-api');
 # sqlite3 = require('sqlite3').verbose();
@@ -48,93 +46,772 @@ dp = Dispatcher(bot=bot)
 event_coin_path = './rate.txt'
 # logf(chatCompletion.choices[0].message.content);
 
-
 payment_token = "284685063:TEST:Y2YxMWE3NmJkODRh"
 
-admins_id = [1432248216,1300210900]
-credentials = require('./key.json')
+admins_id = [1432248216, 1300210900]
+# credentials = require('./key.json')
 
-sessionClient = SessionsClient({ credentials })
 projectId = 'small-talk-rwvf'
 
 vid250 = './250videocards.png'
 
-clan_type = (
-	"Закрытый",
-	"Открытый"
-)
-decor_clan_type = (
-	"🔒",
-	"🔓"
-)
-
-max_videocards = (
-  250,
-  500,
-  750,
-)
-
-farming_timers = (
-  7200,
-  3600,
-  1800,
-)
-
-vip_rangs = (
-  "Отсутствует",
-  "Обычный VIP",
-  "MEGAVIP",
-  "PREMIUM",
-)
-
-multiplies = (
-  1,
-  2,
-  4,
-)
-
-commands = (
-  "/start - выводит меню бота.",
-  "/cash - выводит состояние вашего счета.",
-  "/farming - позволяет заработать деньги.",
-  "/rich_top - выводит топ 10 самых богатых пользователей.",
-  "/crypto_top - выводит топ 10 самых богатых криптомайнеров.",
-  "/ping - выводит задержку бота.",
-  "/shop - выводит магазин.",
-  "/profile - показывает профиль (писать ответом).",
-  "/my_clan - показать информацию о вашем клане.",
-  "/clans - покажет топ богатых кланов.",
-  "/give_c - передать деньги пользователю (писать ответом).",
-  "/give_v - передать видеокарты пользователю (писать ответом).",
-  "/post_sub - отписаться/подписаться на рассылку из канала.",
-  "/code {код} - превратит кучку текста в красивый дизайн с кодом.",
-  "/rate - вывести курс EventCoin.",
-  "/buyCrypto {число} - купить EventCoin по курсу.",
-  "/sellCrypto {число} - продать EventCoin по курсу.",
-)
-
-clans = (
-  "отсутствует",
-)
+clans = ("отсутствует",)
 
 lastToId = 0
 
-
-botReady = false
 startTime = unixtime()
 cooldownPeriod = 5000
 
 
-
-
-@dp.message_handler(Command('start'))
+# region ----- Without using DB
+@dp.message(F.text.regexp(r'^(\/start|меню)(\s|$)'))
 async def start(message: Message):
-    await message.reply('Hello!')
+    user_name = message.from_user.first_name
+
+    try:
+        await message.reply(
+            start_text(user_name),
+            allow_sending_without_reply=True,
+            parse_mode="markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=start_keyboard(InlineKeyboardButton))
+        )
+    except Exception as e:
+        await logf(e)
+        await message.reply(f"❌ Произошла ошибка!\n <code>{e}</code>",
+                            allow_sending_without_reply=True,
+                            parse_mode='HTML')
 
 
-@dp.message_handler(F.text.lower() == 'привет')
-async def start(message: Message):
-    await message.reply('Hello!')
+@dp.message(F.text.regexp(r'^(\/ping|пинг)(\s|$)'))
+async def ping(message: Message):
+    start_time = unixtime()
+    try:
+
+        reply_message = await bot.send_message(message.chat.id, '🔄 *Пинг...*')
+        end_time = unixtime()
+        ping_time = round((end_time - start_time) * 1000, 2)
+        await bot.edit_message_text(
+            f"🚀 *Понг!*  \n💡 *Задержка:* {ping_time}ms",
+            chat_id=message.chat.id,
+            message_id=reply_message.message_id,
+            parse_mode="markdown")
+    except Exception as e:
+        await bot.send_message(message.chat.id, f"Произошла ошибка: {str(e)}")
 
 
-async_run(dp.start_polling())
+@dp.message(F.text.startswith("/test") | F.text.lower().startswith('тест'))
+async def test(message: Message):
+    await bot.send_message(message.chat.id, f"Тест вывод: {1}")
+
+
+@dp.message(F.text.regexp(r'^(\/donate|донат)(\s|$)'))
+async def donate(message: Message):
+    try:
+        await message.reply(
+            donate_text(),
+            allow_sending_without_reply=True,
+            parse_mode="markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=donate_keyboard(InlineKeyboardButton, prices)
+            )
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'^(\/shop|магазин)(\s|$)'))
+async def shop(message: Message):
+    user_name = message.from_user.first_name
+    user_id = message.from_user.id
+    ecoin = await read_eventcoin()
+
+    if await check_flood_wait(user_id):
+        warning = await message.reply(
+            "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
+            parse_mode="markdown"
+        )
+        await asleep(3)
+        await bot.delete_message(warning.chat.id, warning.message_id)
+        return
+    try:
+        await message.reply(
+            start_text(user_name),
+            allow_sending_without_reply=True,
+            parse_mode="markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=shop_keyboard(InlineKeyboardButton, ecoin)
+            )
+        )
+    except Exception as e:
+        await logf(e)
+        await message.reply(f"❌ Произошла ошибка!\n <code>{e}</code>",
+                            allow_sending_without_reply=True,
+                            parse_mode='HTML')
+
+
+# endregion
+
+# region ----- With using DB
+@dp.message(F.text.regexp(r'^(\/cash|баланс)(\s|$)'))
+@with_db(True)
+async def get_cash(cur: Cursor, load: Message, message: Message):
+    try:
+        user_id = message.from_user.id
+        assert message.from_user is not None
+        await cur.execute(
+            "SELECT cash, goldfevervalue, bitcoins FROM users WHERE id=%s",
+            (user_id,))
+
+        row = await cur.fetchone()
+
+        if row is None:
+            await bot.edit_message_text(
+                "❌ Не найдено данных для пользователя.",
+                chat_id=load.chat.id,
+                message_id=load.message_id)
+            return
+
+        if not await check_account(cur, message):
+            return
+
+        cash = format_num(row["cash"])
+        ecoin = format_num(row["bitcoins"])
+
+        cash_text = f"{cash} $"
+        ecoins_text = f"{ecoin} ₠"
+
+        if await check_flood_wait(user_id):
+            warning = await message.reply(
+                "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
+                parse_mode="markdown"
+            )
+            await asleep(3)
+            await bot.delete_message(warning.chat.id, warning.message_id)
+            return
+
+        await bot.edit_message_text(balance_text(cash_text, ecoins_text),
+                                    chat_id=load.chat.id,
+                                    message_id=load.message_id,
+                                    parse_mode="markdown")
+
+    except Exception as e:
+        await bot.send_message(message.chat.id,
+                               f"❌ Произошла ошибка!\n <code>{e}</code>",
+                               parse_mode='HTML')
+        raise e
+
+
+@dp.message(F.text.regexp(r'^(\/farming|фарм)(\s|$)'))
+@with_db(True)
+async def farm(cur: Cursor, load: Message, message: Message):
+    try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        await cur.execute(
+            "SELECT isvip, videocards, last_farming_time FROM users WHERE id = %s",
+            (message.from_user.id,))
+        row = await cur.fetchone()
+
+        if not await check_account(cur, message):
+            return
+
+        is_vip = vip_rangs[row['isvip']]
+        videocards: int = row['videocards']
+
+        last_farming_time = row['last_farming_time']
+        time_now = unixtime()
+
+        if await check_flood_wait(user_id):
+            warning = await message.reply(
+                "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
+                parse_mode="markdown"
+            )
+            await asleep(3)
+            await bot.delete_message(warning.chat.id, warning.message_id)
+            return
+
+        if time_now - last_farming_time < farming_timers[row['isvip']]:
+            time_to_use = farming_timers[row['isvip']] - (time_now -
+                                                          last_farming_time)
+
+            await bot.edit_message_text(farm_text_failure(time_to_use),
+                                        chat_id=load.chat.id,
+                                        message_id=load.message_id,
+                                        parse_mode="markdown")
+            return
+
+        random_cash = int(randint(1000, 10000))
+        random_cash *= multiplies[row['isvip']]
+        random_cash *= videocards if videocards else 1
+
+        multiply_text = multiplies[row['isvip']] * videocards
+        text_video = videocards if videocards else 'Нет. \n💠Используется встроенное графическое ядро.'
+        cryptocoins = random_cash / await read_eventcoin()
+
+        await bot.edit_message_text(farm_text_success(cryptocoins, is_vip,
+                                                      str(text_video),
+                                                      multiply_text),
+                                    chat_id=load.chat.id,
+                                    message_id=load.message_id,
+                                    parse_mode="markdown")
+        await logf(
+            f"{message.from_user.first_name} - {time_now}, Link - 'https://t.me/@id{message.from_user.id}"
+        )
+        await cur.execute(
+            'UPDATE users SET last_farming_time = %s, bitcoins = bitcoins + %s WHERE id = %s',
+            (time_now, cryptocoins, message.from_user.id))
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/dice|кубик|кости)(\s|$)'))
+@with_db(True)
+async def dice(cur, load: Message, message: Message):
+    try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        first_name = message.from_user.first_name
+
+        await cur.execute("SELECT cash FROM users WHERE id = %s", (user_id,))
+        user = await cur.fetchone()
+
+        if not await check_account(cur, message):
+            return
+
+        balance = user['cash']
+
+        if await check_flood_wait(user_id):
+            warning = await message.reply(
+                "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
+                parse_mode="markdown"
+            )
+            await asleep(3)
+            await bot.delete_message(warning.chat.id, warning.message_id)
+            return
+
+        try:
+            parts = message.text.split()
+            bid = int(parts[1])
+            dice_value = int(parts[2])
+
+            if not await validate_bid(bid, balance):
+                if bid < 10:
+                    await send_error_reply(
+                        message,
+                        "⚠️ *Ошибка!* \nСтавка должна быть не меньше 10!",
+                        f"{message.text.split(' ')[0]} [ставка] [1-6]"
+                    )
+                    await bot.delete_message(
+                        chat_id=load.chat.id,
+                        message_id=load.message_id,
+                    )
+                else:
+                    await bot.edit_message_text(
+                        "🚫 *Недостаточно денег!* 💸\nПожалуйста, внесите средства на свой счёт, чтобы продолжить игру.",
+                        chat_id=load.chat.id,
+                        message_id=load.message_id,
+                        parse_mode="markdown"
+                    )
+                return
+
+            if not await validate_dice_value(dice_value):
+                await send_error_reply(
+                    message,
+                    "⚠️ *Ошибка!* \nЧисло должно быть от 1 до 6! 🎲",
+                    f"{message.text.split(' ')[0]} [ставка] [1-6]"
+                )
+                await bot.delete_message(
+                    chat_id=load.chat.id,
+                    message_id=load.message_id,
+                )
+                return
+
+        except (IndexError, ValueError):
+            await message.reply(
+                "⚠️ *Ошибка!* \n"
+                "Введите ставку и число от 1 до 6! 🎯\n"
+                f"Использование: `{message.text.split(' ')[0]} [ставка] [1-6]`",
+                parse_mode="markdown"
+            )
+            return
+
+        try:
+            await bot.delete_message(
+                load.chat.id,
+                load.message_id
+            )
+            spin = await bot.send_dice(
+                message.chat.id,
+                emoji="🎲",
+                allow_sending_without_reply=True,
+                reply_to_message_id=message.message_id
+            )
+            value = spin.dice.value
+
+            if value == dice_value:
+                result_text = f"🎉 *Везение!* \n\nВы выиграли: +{bid}💸\n\n💰 Ваш баланс теперь: {format_num(balance + bid)}$"
+                await cur.execute(
+                    "UPDATE users SET cash = cash + %s WHERE id = %s",
+                    (bid, user_id)
+                )
+            else:
+                result_text = f"😞 *Мимо!* \n\nВы проиграли: -{bid}💸\n\n💰 Ваш баланс теперь: {format_num(balance - bid)}$"
+                await cur.execute(
+                    "UPDATE users SET cash = cash - %s WHERE id = %s",
+                    (bid, user_id)
+                )
+
+            await asleep(4)
+
+            await bot.send_message(
+                message.chat.id,
+                result_text,
+                allow_sending_without_reply=True,
+                reply_to_message_id=spin.message_id,
+                parse_mode="markdown"
+            )
+
+        except Exception as e:
+            await message.reply(
+                f"❌ Произошла ошибка!\n<code>{e}</code>",
+                parse_mode='HTML'
+            )
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/basketball|\/darts|\/football|\/bowling|баскетбол|дартс|футбол|боулинг)(\s|$)'))
+@with_db(True)
+async def game_handler(cur, load: Message, message: Message):
+    try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+
+        await cur.execute("SELECT cash FROM users WHERE id = %s", (user_id,))
+        user = await cur.fetchone()
+
+        if not await check_account(cur, message):
+            return
+
+        balance = user['cash']
+
+        if await check_flood_wait(user_id):
+            warning = await message.reply(
+                "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
+                parse_mode="markdown"
+            )
+            await asleep(3)
+            await bot.delete_message(warning.chat.id, warning.message_id)
+            return
+
+        try:
+            await bot.delete_message(
+                load.chat.id,
+                load.message_id
+            )
+            bid = int(message.text.split()[1])
+
+            if bid < 10:
+                await send_error_reply(
+                    message,
+                    "⚠️ *Ошибка!* \nСтавка должна быть не меньше 10!",
+                    f"{message.text.split(' ')[0]} [ставка]"
+                )
+                return
+
+            if bid > balance:
+                await message.reply(
+                    "🚫 *Недостаточно денег!* 💸\nПополните счёт, чтобы продолжить игру.",
+                    parse_mode="markdown"
+                )
+                return
+
+        except (IndexError, ValueError):
+            await message.reply(
+                "⚠️ *Ошибка!* \nВведите ставку как целое число!\n"
+                f"Использование: `{message.text.split(' ')[0]} [ставка]`",
+                parse_mode="markdown"
+            )
+            return
+
+        try:
+            emoji = await get_emoji(message.text.split(' ')[0])
+            spin = await bot.send_dice(
+                message.chat.id,
+                emoji=emoji,
+                allow_sending_without_reply=True,
+                reply_to_message_id=message.message_id
+            )
+            value = spin.dice.value
+            emoji = spin.dice.emoji
+
+            obtaining, nb = await get_result(emoji, value, bid, balance)
+
+            await asleep(4)
+            await cur.execute(
+                "UPDATE users SET cash = cash + %s WHERE id = %s",
+                (bid, user_id)
+            )
+            await bot.send_message(
+                message.chat.id,
+                obtaining,
+                reply_to_message_id=spin.message_id,
+                parse_mode="markdown"
+            )
+
+        except Exception as e:
+            await message.reply(f"❌ Произошла ошибка!\n <code>{e}</code>", parse_mode='HTML')
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/profile|профиль)(\s|$)'))
+@with_db(True)
+async def profile(cur: Cursor, load: Message, message: Message):
+    try:
+        user_id = None
+        username = None
+
+        if message.entities and len(message.entities) > 1 and message.entities[1].type == "mention":
+            username = message.text[
+                       message.entities[1].offset + 1:message.entities[1].offset + message.entities[1].length]
+            user_query = "SELECT name, id, cash, isvip, videocards, clan, tag, bitcoins FROM users WHERE mention = %s"
+            user_param = (username,)
+        elif message.reply_to_message:
+            user_id = message.reply_to_message.from_user.id
+            user_query = "SELECT name, id, cash, isvip, videocards, clan, tag, bitcoins FROM users WHERE id = %s"
+            user_param = (user_id,)
+        else:
+            await bot.edit_message_text(
+                "❗️ Команда должна писаться в ответ на сообщение или содержать упоминание пользователя!",
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            return
+
+        await cur.execute(user_query, user_param)
+        user = await cur.fetchone()
+
+        if not user:
+            await message.reply(
+                "❌ У этого пользователя нет аккаунта!",
+                allow_sending_without_reply=True
+            )
+            return
+
+        if user["clan"] == 0:
+            current_clan = "отсутствует"
+        else:
+            await cur.execute("SELECT name FROM clans WHERE owner=  %s", (user["clan"],))
+            clan_data = await cur.fetchone()
+            current_clan = clan_data["name"] if clan_data else "нет"
+
+        user_name = message.reply_to_message.from_user.first_name if message.reply_to_message else f"@{username}"
+        link = hlink(user_name, f'tg://user?id={user['id']}')
+        profile_result = (
+            f"👤 {hlink(user_name, f'tg://user?id={user['id']}')}"
+            f"\n<b>Профиль</b> пользователя {hbold(user['name'])}: \n"
+            f"\n🏰 Клан: {hbold(current_clan)}"
+            f"\n🏷 Префикс: {hbold(user['tag'])}"
+            f"\n📇 Псевдоним: {hbold(user['name'])}"
+            f"\n🆔 ID: {user['id']}"
+            f"\n💵 Баланс: {format_num(user['cash'])}$"
+            f"\n💳 ECoins: {format_num(user['bitcoins'])}₠"
+            f"\n🖥 Видеокарты: {user['videocards']} шт."
+            f"\n🪪 Пропуск: {vip_rangs[user['isvip']]}"
+        )
+
+        invite_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✉️ Пригласить в клан", callback_data=f"clan_invite_{user['id']}")]
+            ] if user["clan"] == 0 else [
+                [InlineKeyboardButton(text=f"🏰 {current_clan}", callback_data=f"clan_show_info_{user["clan"]}")]
+            ]
+        )
+
+        await bot.edit_message_text(
+            profile_result,
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML",
+            reply_markup=invite_keyboard
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/clans|кланы)(\s|$)'))
+@with_db(True)
+async def top_clans(cur: Cursor, load: Message, message: Message):
+    try:
+        await cur.execute("SELECT name, money, type, owner FROM clans ORDER BY money DESC LIMIT 10")
+        clans_row = await cur.fetchall()
+        keyboard = clans_keyboard(clans_row, InlineKeyboardButton)
+
+        await bot.edit_message_text(
+            clans_text(),
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=keyboard
+            )
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.successful_payment)
+@with_db(True)
+async def got_payment(cur: Cursor, load: Message, message: Message):
+    try:
+        payment = message.successful_payment
+        currency = get_currency_symbol(payment.currency, locale="en")
+        payload = payment.invoice_payload
+        quantity = payload.split(' ')[0]
+
+        await cur.execute(
+            'UPDATE users SET videocards = videocards + %s WHERE id = %s',
+            (int(quantity), message.from_user.id))
+
+        await bot.edit_message_text(
+            text=f'✅ Оплата прошла успешно, спасибо за покупку! \n\n'
+                 f'🧾 *Детали заказа* \n'
+                 f'📦 Товар: {payment.invoice_payload}\n'
+                 f'💰 Цена: {payment.total_amount / 100}{currency}\n\n'
+                 f'🔄 Ваш баланс обновлен.',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+# endregion
+
+
+# region ----- Payments query
+@dp.pre_checkout_query(lambda query: True)
+@with_db(True)
+async def checkout(cur: Cursor, loading: Message, pre_checkout_query: PreCheckoutQuery, *args: Any, **kwargs: Any):
+    try:
+        assert pre_checkout_query.from_user is not None
+        await cur.execute(
+            "SELECT cash, goldfevervalue, bitcoins FROM users WHERE id=%s",
+            (pre_checkout_query.from_user.id,))
+
+        row = await cur.fetchone()
+
+        if row is None:
+            await bot.answer_pre_checkout_query(
+                pre_checkout_query.id,
+                ok=False,
+                error_message=f'🚫 Вы не зарегистрированы! \nНапишите любую игровую команду для создания аккаунта.'
+            )
+            return
+
+        if not await check_account(cur, pre_checkout_query):
+            return
+
+        await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+    except Exception as e:
+        await bot.answer_pre_checkout_query(
+            pre_checkout_query.id,
+            ok=False,
+            error_message=f"❌ Произошла ошибка!\n {e}"
+        )
+        raise e
+
+
+# endregion
+
+
+# region ----- Callback query
+@dp.callback_query(lambda c: c.data.startswith('donatevid'))
+async def donate_videocards(callback: CallbackQuery):
+    vid_id = callback.data.split('donatevid')[1]
+    price = filter_dict(prices, vid_id)
+    await bot.answer_callback_query(callback.id)
+    await bot.send_invoice(
+        callback.message.chat.id, title=f"🖥 {price.label}",
+        description='Купи больше видеокарт для своей майнинг фермы несмотря на лимит!',
+        # provider_token='410694247:TEST:d26cecc4-1321-4cb9-b23f-b385f5d0594f',
+        currency='XTR',
+        prices=[price],
+        start_parameter=f'vid{vid_id}',
+        payload=price.label
+    )
+
+
+@dp.callback_query(lambda c: c.data == 'commands')
+async def list_commands(callback: CallbackQuery):
+    user = callback.from_user
+    list_message = f'🚀 <a href="tg://user?id={user.id}">{user.first_name}</a> вызывает список команд.\n\n'
+    for command in commands:
+        head = command.split("-")[0]
+        value = command.split("-")[1]
+        list_message += f"‣ <b>{head}</b> - {value}\n"
+    await callback.message.reply(
+        list_message,
+        allow_sending_without_reply=True,
+        parse_mode='html'
+    )
+
+
+@dp.callback_query(lambda c: c.data.startswith('buyvid'))
+@with_db(lambda c: len(c.data.split('_')) > 1)
+async def buy_videocards(cur: Cursor, load: Message, callback: CallbackQuery, *args: Any, **kwargs: Any):
+    try:
+        assert callback.from_user is not None
+        await cur.execute(
+            "SELECT videocards FROM users WHERE id=%s",
+            (callback.from_user.id,))
+
+        row = await cur.fetchone()
+
+        if row is None:
+            await bot.edit_message_text(
+                "❌ Не найдено данных для пользователя.",
+                chat_id=load.chat.id,
+                message_id=load.message_id)
+            return
+
+        if not await check_account(cur, callback):
+            return
+
+        link = f'<a href="tg://user?id={callback.from_user.id}">{callback.from_user.first_name}</a>'
+        vid_value = None
+        if len(callback.data.split('_')) > 1:
+            vid_value = callback.data.split('_')[1]
+            user_id = int(callback.data.split('_')[2])
+            if callback.from_user.id != user_id:
+                await bot.answer_callback_query(
+                    callback.id,
+                    "⛔️ Эта кнопка предназначена не для Вас!",
+                    show_alert=True
+                )
+            else:
+                await bot.edit_message_text(
+                    text=f"Количество: {vid_value}",
+                    chat_id=load.chat.id,
+                    message_id=load.message_id,
+                    parse_mode='html'
+                )
+        else:
+            await bot.edit_message_text(
+                text=videocards_text_select(link),
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode='html',
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=videocards_keyboard(InlineKeyboardButton, factor, row["videocards"],
+                                                        callback.from_user.id)
+                )
+            )
+
+        await bot.answer_callback_query(callback.id)
+    except Exception as e:
+        await bot.send_message(
+            callback.message.chat.id,
+            f"❌ Произошла ошибка!\n <code>{e}</code>",
+            parse_mode='HTML'
+        )
+        raise e
+
+
+@dp.callback_query(lambda c: c.data == 'decor')
+async def decoration(callback: CallbackQuery):
+    await bot.answer_callback_query(callback.id)
+
+
+@dp.callback_query(lambda c: c.data.startswith('clan'))
+@with_db(lambda c: c.message.chat.type != "private")
+async def clan_handler(cur, load: Message, callback: CallbackQuery):
+    """Обрабатывает запросы для отображения информации о клане или пользователе."""
+    try:
+        assert callback.from_user is not None
+        option = callback.data.split('_')[1]
+        target_id = int(callback.data.split('_')[3]) if option == "show" else None
+        load = callback.message if callback.message.chat.type == "private" else load
+        if option == "show":
+            await cur.execute("SELECT name FROM users WHERE id = %s", (target_id,))
+            owner_row = await cur.fetchone()
+            if not owner_row:
+                await bot.edit_message_text(
+                    "❌ Не найдено данных для создателя.",
+                    chat_id=load.chat.id,
+                    message_id=load.message_id
+                )
+                return
+            await handle_clan_show(cur, load, callback, bot, owner_row)
+        else:
+            await bot.answer_callback_query(
+                callback.id,
+                "⛔️ Неверная опция!",
+                show_alert=True
+            )
+
+        await bot.answer_callback_query(callback.id)
+
+    except Exception as e:
+        await bot.send_message(
+            callback.message.chat.id,
+            f"❌ Произошла ошибка!\n<code>{e}</code>",
+            parse_mode="HTML"
+        )
+        raise e
+
+
+# endregion
+
+
+async def main():
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == '__main__':
+    async_run(main())
