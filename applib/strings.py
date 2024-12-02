@@ -2,10 +2,10 @@ from .vars import vip_rangs, clan_types, indexes
 
 __all__ = [
     "start_text", "balance_text", "farm_text_failure", "farm_text_success", "donate_text", "videocards_text_select",
-    "profile_text", "clans_text",
+    "profile_text", "clans_text", "rich_text", "crypto_text", "clan_text", "rate_text",
 
     "start_keyboard", "donate_keyboard", "shop_keyboard", "videocards_keyboard", "clan_keyboard",
-    "profile_clan_keyboard", "clans_keyboard", "clan_peoples_keyboard", "clan_owner_keyboard"
+    "profile_clan_keyboard", "clans_keyboard", "clan_peoples_keyboard", "clan_owner_keyboard", "top_keyboard"
 ]
 
 
@@ -73,11 +73,6 @@ def shop_keyboard(InlineKeyboardButton, ecoin):
             InlineKeyboardButton(
                 text=f'🏷️ Продать макс. кол-во ECoin (1₠ ≈ {round(ecoin, 2)}$)',
                 callback_data='sell_max_ecoins')
-        ],
-        [
-            InlineKeyboardButton(
-                text='Как продать/купить определенное число ECoin?',
-                callback_data='crypto_guide')
         ]
     ]
     return keyboard
@@ -158,11 +153,11 @@ def clans_keyboard(clans_row, InlineKeyboardButton):
 
 def clan_peoples_keyboard(clan_id, members, InlineKeyboardButton):
     keyboard = [
-        [InlineKeyboardButton(text=member['name'], callback_data=f"clan_show_member_{member['id']}")]
-        for member in members
-    ] + [
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"clan_show_info_{clan_id}")]
-    ]
+                   [InlineKeyboardButton(text=member['name'], callback_data=f"clan_show_member_{member['id']}")]
+                   for member in members
+               ] + [
+                   [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"clan_show_info_{clan_id}")]
+               ]
 
     return keyboard
 
@@ -171,6 +166,23 @@ def clan_owner_keyboard(owner, InlineKeyboardButton):
     keyboard = [
         [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"clan_show_info_{owner['id']}")]
     ]
+    return keyboard
+
+
+def top_keyboard(users_row, InlineKeyboardButton, symbol):
+    from .funcs import format_num
+    keyboard = []
+    for index, user_data in enumerate(users_row, start=1):
+        name = user_data[0]
+        money = user_data[1]
+        user_id = user_data[2]
+        user_tag = user_data[3]
+
+        button_text = f"{indexes[index - 1]} {user_tag} {name} - {format_num(money)}{symbol}"
+        keyboard.append([InlineKeyboardButton(
+            text=button_text,
+            callback_data=f"profile_{user_id}"
+        )])
     return keyboard
 
 
@@ -204,11 +216,11 @@ def farm_text_failure(time: int):
 ✅ *Вы уже собирали доход с майнинг фермы!*  
 ⏳ *Следующий приход:* {format_time(time)}  
 
-🚀 **Возвращайтесь позже!**
+🚀 *Возвращайтесь позже!*
 """
 
 
-def farm_text_success(ecoins: int, vip: str, videocards: str, multiplier: int):
+def farm_text_success(ecoins: float, vip: str, videocards: str, multiplier: int):
     """Форматирует текст для успешного получения дохода от майнинга."""
     from .funcs import format_num
     return f"""
@@ -219,7 +231,7 @@ def farm_text_success(ecoins: int, vip: str, videocards: str, multiplier: int):
 🖥 *Видеокарты:* {videocards}  
 ✖️ *Множитель:* {multiplier}  
 
-🚀 *Возвращайтесь за новыми достижениями!*
+💳 *Просмотреть баланс:* /cash.
 """
 
 
@@ -235,7 +247,7 @@ def donate_text():
 def videocards_text_select(user):
     """Форматирует текст выбора видеокарт."""
     return f"""
-💻 Покупка видеокарт 💻
+<b>💻 Покупка видеокарт 💻</b>
 
 ❗ <i>️Цены и кнопки ниже предназначены только для {user}!</i>
 🛒 Выберите ниже количество видеокарт для покупки:
@@ -246,7 +258,7 @@ def profile_text(link, hbold, user, clan):
     from .funcs import format_num
     information = f"""
 👤 {link}
-<b>Профиль</b> пользователя {hbold(user['name'])}:
+<b>Профиль пользователя {hbold(user['name'])}:</b>
 
 🏰 Клан: {hbold(clan)}
 🏷 Префикс: {hbold(user['tag'])}
@@ -260,12 +272,61 @@ def profile_text(link, hbold, user, clan):
     return information
 
 
+def clan_text(clan_row, owner_link, members):
+    from .funcs import format_num
+    information = f"""
+🏆 <b>Клан:</b> {clan_row['name']}:
+💵 <b>Бюджет:</b> {format_num(clan_row['money'])}$
+🛡 <b>Тип:</b> {'Закрытый' if clan_row['type'] == 0 else 'Открытый'}
+🚙 <b>Танки:</b> {clan_row['tanks']}
+🎯 <b>Артиллерии:</b> {clan_row['artillery']}
+🪖 <b>Пехота:</b> {clan_row['troops']}
+*️⃣ <b>Очки:</b> {format_num(clan_row['points'])}
+
+👑 <b>Владелец:</b> {owner_link}
+👥 <b>Участников:</b> {len(members)}
+    """
+    return information
+
+
 def clans_text():
     return """
-🏰 ТОП-10 самых богатых кланов 🏰
+<b>🏰 ТОП-10 самых богатых кланов 🏰</b>
 
 🔽 Нажмите на клан для его просмотра:
     """
+
+
+def rich_text():
+    return """
+<b>🤑 ТОП-10 самых богатых игроков ($) 🤑</b>
+
+🔽 Нажмите на игрока для просмотра профиля:
+    """
+
+
+def crypto_text():
+    return """
+<b>🤑 ТОП-10 самых богатых игроков (₠)🤑</b>
+
+🔽 Нажмите на игрока для просмотра профиля:
+    """
+
+
+def rate_text(rate):
+    text = f"""
+📈 <b>Курс EventCoin ₠</b> 📉
+
+📊 <b>1₠ ≈ {round(rate, 2)}$</b>  
+
+💱 <b>Разменять монеты:</b> /shop
+📈 <b>Купить монеты:</b> /buyCrypto [число]
+📉 <b>Продать монеты:</b> /sellCrypto [число]
+
+✨ <b>Примечание:</b> Курс обновляется в реальном времени в зависимости от обменных операций.
+"""
+    return text
+
 
 # def videocards_buying_text():
 #     return f"""

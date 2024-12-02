@@ -8,6 +8,7 @@ from aiogram.utils.markdown import hbold, hlink
 from babel.numbers import get_currency_symbol
 from asyncio import run as async_run
 from asyncio import sleep as asleep
+from asyncio import gather, get_event_loop, create_task, CancelledError, all_tasks, current_task
 from time import time as unixtime
 from dotenv import dotenv_values
 from applib.strings import *
@@ -15,6 +16,7 @@ from applib import *
 from aiopg import Cursor
 from random import randint
 from typing import Dict
+from signal import SIGINT, SIGTERM
 
 from os import environ
 from google.cloud import dialogflow
@@ -108,6 +110,18 @@ async def test(message: Message):
 @dp.message(F.text.regexp(r'^(\/donate|донат)(\s|$)'))
 async def donate(message: Message):
     try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        if await check_flood_wait(user_id):
+            warning = await message.reply(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(warning.chat.id, warning.message_id)
+            return
+
         await message.reply(
             donate_text(),
             allow_sending_without_reply=True,
@@ -128,18 +142,21 @@ async def donate(message: Message):
 
 @dp.message(F.text.regexp(r'^(\/shop|магазин)(\s|$)'))
 async def shop(message: Message):
-    user_name = message.from_user.first_name
+    assert message.from_user is not None
     user_id = message.from_user.id
-    ecoin = await read_eventcoin()
+    user_name = message.from_user.first_name
+    ecoin = await ecoin_to_bucks(1)
 
     if await check_flood_wait(user_id):
         warning = await message.reply(
-            "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
-            parse_mode="markdown"
+            f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, '
+            f'Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+            parse_mode="HTML"
         )
         await asleep(3)
         await bot.delete_message(warning.chat.id, warning.message_id)
         return
+
     try:
         await message.reply(
             start_text(user_name),
@@ -156,15 +173,36 @@ async def shop(message: Message):
                             parse_mode='HTML')
 
 
+@dp.message(F.text.regexp(r'(?i)^(\/rate|курс|екоин)(\s|$)'))
+async def show_rate(message: Message):
+    rate = await ecoin_to_bucks(1)
+    await message.reply(
+        rate_text(rate),
+        allow_sending_without_reply=True,
+        parse_mode='HTML'
+    )
 # endregion
+
 
 # region ----- With using DB
 @dp.message(F.text.regexp(r'^(\/cash|баланс)(\s|$)'))
 @with_db(True)
 async def get_cash(cur: Cursor, load: Message, message: Message):
     try:
-        user_id = message.from_user.id
         assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
+
         await cur.execute(
             "SELECT cash, goldfevervalue, bitcoins FROM users WHERE id=%s",
             (user_id,))
@@ -187,15 +225,6 @@ async def get_cash(cur: Cursor, load: Message, message: Message):
         cash_text = f"{cash} $"
         ecoins_text = f"{ecoin} ₠"
 
-        if await check_flood_wait(user_id):
-            warning = await message.reply(
-                "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
-                parse_mode="markdown"
-            )
-            await asleep(3)
-            await bot.delete_message(warning.chat.id, warning.message_id)
-            return
-
         await bot.edit_message_text(balance_text(cash_text, ecoins_text),
                                     chat_id=load.chat.id,
                                     message_id=load.message_id,
@@ -214,6 +243,19 @@ async def farm(cur: Cursor, load: Message, message: Message):
     try:
         assert message.from_user is not None
         user_id = message.from_user.id
+        user_name = message.from_user.first_name
+
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
+
         await cur.execute(
             "SELECT isvip, videocards, last_farming_time FROM users WHERE id = %s",
             (message.from_user.id,))
@@ -228,18 +270,8 @@ async def farm(cur: Cursor, load: Message, message: Message):
         last_farming_time = row['last_farming_time']
         time_now = unixtime()
 
-        if await check_flood_wait(user_id):
-            warning = await message.reply(
-                "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
-                parse_mode="markdown"
-            )
-            await asleep(3)
-            await bot.delete_message(warning.chat.id, warning.message_id)
-            return
-
         if time_now - last_farming_time < farming_timers[row['isvip']]:
-            time_to_use = farming_timers[row['isvip']] - (time_now -
-                                                          last_farming_time)
+            time_to_use = farming_timers[row['isvip']] - (time_now - last_farming_time)
 
             await bot.edit_message_text(farm_text_failure(time_to_use),
                                         chat_id=load.chat.id,
@@ -253,8 +285,14 @@ async def farm(cur: Cursor, load: Message, message: Message):
 
         multiply_text = multiplies[row['isvip']] * videocards
         text_video = videocards if videocards else 'Нет. \n💠Используется встроенное графическое ядро.'
-        cryptocoins = random_cash / await read_eventcoin()
 
+        rate, farmed_amount = await read_eventcoin()
+        cryptocoins = random_cash / rate
+
+        farmed_amount += random_cash
+        await write_eventcoin(rate, farmed_amount)
+
+        # Ответ пользователю
         await bot.edit_message_text(farm_text_success(cryptocoins, is_vip,
                                                       str(text_video),
                                                       multiply_text),
@@ -262,11 +300,94 @@ async def farm(cur: Cursor, load: Message, message: Message):
                                     message_id=load.message_id,
                                     parse_mode="markdown")
         await logf(
-            f"{message.from_user.first_name} - {time_now}, Link - 'https://t.me/@id{message.from_user.id}"
+            f"{message.from_user.first_name} - {format_time(int(time_now))}, Link - 'tg://user?id={message.from_user.id}"
         )
         await cur.execute(
             'UPDATE users SET last_farming_time = %s, bitcoins = bitcoins + %s WHERE id = %s',
             (time_now, cryptocoins, message.from_user.id))
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/rich_top|топ богачей|топ богатых|богатые)(\s|$)'))
+@with_db(True)
+async def rich_top(cur, load: Message, message: Message):
+    try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
+
+        await cur.execute("SELECT name, cash, id, tag FROM users ORDER BY cash DESC LIMIT 10")
+        users_row = await cur.fetchall()
+        keyboard = top_keyboard(users_row, InlineKeyboardButton, "$")
+
+        await bot.edit_message_text(
+            rich_text(),
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=keyboard
+            )
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/crypto_top|топ крипта|топ майнеры|майнеры)(\s|$)'))
+@with_db(True)
+async def rich_top(cur, load: Message, message: Message):
+    try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
+
+        await cur.execute("SELECT name, bitcoins, id, tag FROM users ORDER BY bitcoins DESC LIMIT 10")
+        users_row = await cur.fetchall()
+        keyboard = top_keyboard(users_row, InlineKeyboardButton, "₠")
+
+        await bot.edit_message_text(
+            crypto_text(),
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=keyboard
+            )
+        )
+
     except Exception as e:
         await bot.edit_message_text(
             f'❌ Произошла ошибка!\n{e}',
@@ -294,8 +415,8 @@ async def dice(cur, load: Message, message: Message):
 
         if await check_flood_wait(user_id):
             warning = await message.reply(
-                "🚫 Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
-                parse_mode="markdown"
+                f"🚫 <a href=tg://user?id={user_id}>{first_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
+                parse_mode="HTML"
             )
             await asleep(3)
             await bot.delete_message(warning.chat.id, warning.message_id)
@@ -492,8 +613,19 @@ async def game_handler(cur, load: Message, message: Message):
 @with_db(True)
 async def profile(cur: Cursor, load: Message, message: Message):
     try:
-        user_id = None
-        username = None
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
 
         if message.entities and len(message.entities) > 1 and message.entities[1].type == "mention":
             username = message.text[
@@ -532,7 +664,7 @@ async def profile(cur: Cursor, load: Message, message: Message):
 
         user_name = message.reply_to_message.from_user.first_name if message.reply_to_message else f"@{username}"
         link = hlink(user_name, f'tg://user?id={user['id']}')
-        profile_result = (
+        """profile_result = (
             f"👤 {hlink(user_name, f'tg://user?id={user['id']}')}"
             f"\n<b>Профиль</b> пользователя {hbold(user['name'])}: \n"
             f"\n🏰 Клан: {hbold(current_clan)}"
@@ -543,7 +675,8 @@ async def profile(cur: Cursor, load: Message, message: Message):
             f"\n💳 ECoins: {format_num(user['bitcoins'])}₠"
             f"\n🖥 Видеокарты: {user['videocards']} шт."
             f"\n🪪 Пропуск: {vip_rangs[user['isvip']]}"
-        )
+        )"""
+        profile_result = profile_text(hlink(user_name, f'tg://user?id={user['id']}'), hbold, user, current_clan)
 
         invite_keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -574,6 +707,20 @@ async def profile(cur: Cursor, load: Message, message: Message):
 @with_db(True)
 async def top_clans(cur: Cursor, load: Message, message: Message):
     try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
+
         await cur.execute("SELECT name, money, type, owner FROM clans ORDER BY money DESC LIMIT 10")
         clans_row = await cur.fetchall()
         keyboard = clans_keyboard(clans_row, InlineKeyboardButton)
@@ -586,6 +733,186 @@ async def top_clans(cur: Cursor, load: Message, message: Message):
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=keyboard
             )
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/clan|клан|мой клан)(\s|$)'))
+@with_db(True)
+async def clan(cur: Cursor, load: Message, message: Message):
+    try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
+
+        if not await check_account(cur, message):
+            return
+
+        await cur.execute("SELECT clan FROM users WHERE id = %s", (message.from_user.id,))
+        user = await cur.fetchone()
+        await cur.execute("SELECT name, id FROM users WHERE id = %s", (user["clan"],))
+        owner_row = await cur.fetchone()
+        await cur.execute("SELECT * FROM clans WHERE owner = %s", (user["clan"],))
+        clan_row = await cur.fetchone()
+
+        owner_link = hlink(owner_row["name"], f'tg://user?id={owner_row["id"]}')
+        members = await get_clan_members(clan_id=clan_row['owner'])
+        keyboard = clan_keyboard(clan_row, InlineKeyboardButton)
+
+        await bot.edit_message_text(
+            clan_text(clan_row, owner_link, members),
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=keyboard
+            )
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/buyCrypto|купить крипту|купить екоин)(\s|$)'))
+@with_db(True)
+async def buy_crypto(cur: Cursor, load: Message, message: Message):
+    try:
+        ecoins = int(message.text.split()[1])
+    except (ValueError, IndexError):
+        await bot.edit_message_text(
+            text="❌ Введенное вами значение не является числом!",
+            chat_id=load.chat.id,
+            message_id=load.message_id
+        )
+        return
+    try:
+        if ecoins <= 0:
+            await bot.edit_message_text(
+                text="❌ Нельзя продать число меньше или равное нулю!",
+                chat_id=load.chat.id,
+                message_id=load.message_id
+            )
+            return
+
+        bucks = await ecoin_to_bucks(ecoins)
+
+        user_id = message.from_user.id
+        await cur.execute("SELECT cash, bitcoins FROM users WHERE id=%s", (user_id,))
+        row = await cur.fetchone()
+
+        if not await check_account(cur, message):
+            return
+
+        cash, bitcoins = row
+        if bucks > cash:
+            await bot.edit_message_text(
+                text="❌ У вас нет такого количества ECoin!",
+                chat_id=load.chat.id,
+                message_id=load.message_id
+            )
+            return
+
+        await cur.execute(
+            "UPDATE users SET cash = cash-%s, bitcoins = bitcoins+%s WHERE id=%s",
+            (bucks, ecoins, user_id)
+        )
+
+        rate, farmed_amount = await read_eventcoin()
+        farmed_amount += bucks
+        await write_eventcoin(rate, farmed_amount)
+
+        await bot.edit_message_text(
+            text=f"✅ Успешно куплено {format_num(ecoins)}₠ за {format_num(int(bucks))}$!",
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        await bot.edit_message_text(
+            f'❌ Произошла ошибка!\n{e}',
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+        )
+        await logf(e)
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/sellCrypto|продать крипту|продать екоин)(\s|$)'))
+@with_db(True)
+async def sell_crypto(cur: Cursor, load: Message, message: Message):
+    try:
+        ecoins = int(message.text.split()[1])
+    except (ValueError, IndexError):
+        await bot.edit_message_text(
+            text="❌ Введенное вами значение не является числом!",
+            chat_id=load.chat.id,
+            message_id=load.message_id
+        )
+        return
+
+    try:
+        if ecoins <= 0:
+            await bot.edit_message_text(
+                text="❌ Нельзя продать число меньше или равное нулю!",
+                chat_id=load.chat.id,
+                message_id=load.message_id
+            )
+            return
+
+        bucks = await ecoin_to_bucks(ecoins)
+
+        user_id = message.from_user.id
+        await cur.execute("SELECT cash, bitcoins FROM users WHERE id=%s", (user_id,))
+        row = await cur.fetchone()
+
+        if not await check_account(cur, message):
+            return
+
+        cash, bitcoins = row
+        if ecoins > bitcoins:
+            await bot.edit_message_text(
+                text="❌ У вас нет такого количества ECoin!",
+                chat_id=load.chat.id,
+                message_id=load.message_id
+            )
+            return
+
+        await cur.execute(
+            "UPDATE users SET cash = cash+%s, bitcoins = bitcoins-%s WHERE id=%s",
+            (bucks, ecoins, user_id)
+        )
+
+        rate, farmed_amount = await read_eventcoin()
+        farmed_amount -= bucks
+        await write_eventcoin(rate, farmed_amount)
+
+        await bot.edit_message_text(
+            text=f"✅ Успешно продано {format_num(ecoins)}₠ за {format_num(int(bucks))}$!",
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML"
         )
 
     except Exception as e:
@@ -777,7 +1104,7 @@ async def clan_handler(cur, load: Message, callback: CallbackQuery):
         target_id = int(callback.data.split('_')[3]) if option == "show" else None
         load = callback.message if callback.message.chat.type == "private" else load
         if option == "show":
-            await cur.execute("SELECT name FROM users WHERE id = %s", (target_id,))
+            await cur.execute("SELECT name, id FROM users WHERE id = %s", (target_id,))
             owner_row = await cur.fetchone()
             if not owner_row:
                 await bot.edit_message_text(
@@ -793,6 +1120,10 @@ async def clan_handler(cur, load: Message, callback: CallbackQuery):
                 "⛔️ Неверная опция!",
                 show_alert=True
             )
+            await bot.delete_message(
+                chat_id=load.chat.id,
+                message_id=load.message_id
+            )
 
         await bot.answer_callback_query(callback.id)
 
@@ -805,13 +1136,98 @@ async def clan_handler(cur, load: Message, callback: CallbackQuery):
         raise e
 
 
+@dp.callback_query(lambda c: c.data.startswith('profile'))
+@with_db(lambda c: c.message.chat.type != "private")
+async def profile_handler(cur, load: Message, callback: CallbackQuery):
+    try:
+        assert callback.from_user is not None
+        target_id = int(callback.data.split('_')[1])
+        load = callback.message if callback.message.chat.type == "private" else load
+        await cur.execute("SELECT name, id, cash, isvip, videocards, clan, tag, bitcoins FROM users WHERE id = %s",
+                          (target_id,))
+        user = await cur.fetchone()
+
+        if not user:
+            await load.reply(
+                "❌ У этого пользователя нет аккаунта!",
+                allow_sending_without_reply=True
+            )
+            return
+
+        if user["clan"] == 0:
+            current_clan = "отсутствует"
+        else:
+            await cur.execute("SELECT name FROM clans WHERE owner=  %s", (user["clan"],))
+            clan_data = await cur.fetchone()
+            current_clan = clan_data["name"] if clan_data else "нет"
+
+        invite_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✉️ Пригласить в клан", callback_data=f"clan_invite_{user['id']}")]
+            ] if user["clan"] == 0 else [
+                [InlineKeyboardButton(text=f"🏰 {current_clan}", callback_data=f"clan_show_info_{user["clan"]}")]
+            ]
+        )
+
+        link = hlink(user["name"], f'tg://user?id={user['id']}')
+
+        await bot.edit_message_text(
+            profile_text(link, hbold, user, current_clan),
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML",
+            reply_markup=invite_keyboard
+        )
+        await bot.answer_callback_query(callback.id)
+
+    except Exception as e:
+        await bot.send_message(
+            callback.message.chat.id,
+            f"❌ Произошла ошибка!\n<code>{e}</code>",
+            parse_mode="HTML"
+        )
+        raise e
 # endregion
+
+
+async def shutdown():
+    await bot.session.close()
+    tasks = [t for t in all_tasks() if t is not current_task()]
+    for task in tasks:
+        task.cancel()
+        try:
+            await task
+        except CancelledError:
+            pass
+
+
+def signal_handler():
+    loop = get_event_loop()
+    for sig in (SIGINT, SIGTERM):
+        loop.add_signal_handler(sig, lambda: create_task(shutdown()))
 
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    signal_handler()
+
+    background_task = create_task(rate_update_loop())
+
+    try:
+        await dp.start_polling(bot)
+    except CancelledError:
+        pass
+    finally:
+        background_task.cancel()
+        try:
+            await background_task
+        except CancelledError:
+            pass
+        await shutdown()
 
 
 if __name__ == '__main__':
-    async_run(main())
+    try:
+        async_run(main())
+    except CancelledError:
+        pass

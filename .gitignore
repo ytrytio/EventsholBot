@@ -208,6 +208,7 @@ applib/__pycache__
 dialog_flow.json
 log.txt
 pyproject.toml
+rate_backup
 
 checks.py
 converted_bot.py

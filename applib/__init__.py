@@ -14,5 +14,6 @@ __all__ = [
     "filter_dict",
     "text2mdv2", "read_eventcoin", "parse_bid_and_dice", "validate_bid", "validate_dice_value",
     "send_error_reply", "check_flood_wait", "get_result", "get_emoji", "set_clan_budget",
-    "set_clan_type", "set_clan_name", "handle_clan_set", "handle_clan_show"
+    "set_clan_type", "set_clan_name", "handle_clan_set", "handle_clan_show", "get_clan_members",
+    "write_eventcoin", "rate_update_loop", "ecoin_to_bucks", "bucks_to_ecoin"
 ]

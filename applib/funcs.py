@@ -10,15 +10,18 @@ from dotenv import dotenv_values
 from psycopg2.extras import DictCursor
 from re import sub, escape
 from functools import wraps
+from asyncio import sleep as asleep
+from asyncio import CancelledError
 
 from .vars import log_file, event_coin_file, slot_machine_multipliers, emoji_multipliers, MESSAGE_LIMIT, TIME_FRAME
 from .types import Any
-from .strings import profile_text, profile_clan_keyboard, clan_peoples_keyboard, clan_owner_keyboard
+from .strings import profile_text, clan_text, profile_clan_keyboard, clan_peoples_keyboard, clan_owner_keyboard
 
 __all__ = ["logf", "with_db", "check_account", "format_num", "format_time", "filter_dict", "text2mdv2",
            "read_eventcoin", "parse_bid_and_dice", "validate_bid", "validate_dice_value", "send_error_reply",
            "check_flood_wait", "get_result", "get_emoji", "set_clan_budget", "set_clan_type", "set_clan_name",
-           "handle_clan_set", "handle_clan_show"]
+           "handle_clan_set", "handle_clan_show", "get_clan_members", "write_eventcoin", "rate_update_loop",
+           "ecoin_to_bucks", "bucks_to_ecoin"]
 
 secrets: dict[str, str | None] = dotenv_values('.env')
 
@@ -151,15 +154,81 @@ def text2mdv2(text):
     return sub(f"([{escape(special_chars)}])", r"\\\1", text)
 
 
-async def read_eventcoin() -> float:
-    try:
-        async with aiopen(event_coin_file) as f:
-            value = float(await f.read())
+async def ecoin_to_bucks(value: int) -> float:
+    rate, _ = await read_eventcoin()
+    return value * rate
 
-        return value
+
+async def bucks_to_ecoin(value: int) -> float:
+    rate, _ = await read_eventcoin()
+    return value / rate
+
+
+async def read_eventcoin() -> tuple[float, float]:
+    """
+    Считывает курс и количество произведённых монет из файла.
+    Возвращает (курс, произведённые монеты).
+    """
+    try:
+        async with aiopen(event_coin_file, 'r') as f:
+            data = await f.read()
+            rate, farmed_amount = map(float, data.split(':'))
+        return rate, farmed_amount
+    except FileNotFoundError:
+        return 1000.0, 0.0
     except Exception as e:
-        await logf(f'Ошибка при чтении файла:\n{e}')
+        await logf(f'Ошибка при чтении файла {event_coin_file}:\n{e}')
         raise e
+
+
+async def write_eventcoin(rate: float, farmed_amount: float):
+    """
+    Записывает курс и количество произведённых монет в файл.
+    """
+    async with aiopen(event_coin_file, 'w') as f:
+        await f.write(f"{rate}:{farmed_amount}")
+
+
+async def update_rate():
+    """
+    Обновляет курс на основе общего количества произведённых монет.
+    Изменение курса ограничено, чтобы избежать сильных колебаний.
+    """
+    current_rate, farmed_amount = await read_eventcoin()
+    print("1", current_rate, farmed_amount)
+
+    course_change = farmed_amount * 0.0000001
+    print("2", course_change)
+
+    max_course_change = current_rate * 0.01
+    print("3", max_course_change)
+
+    course_change = min(course_change, max_course_change)
+    course_change = max(course_change, -max_course_change)
+    print("4", course_change)
+
+    current_rate += course_change
+    print("5", current_rate)
+
+    current_rate = max(1.0, current_rate)
+    print("6", current_rate)
+
+    current_rate = round(current_rate, 2)
+
+    print(f"Текущий курс: {current_rate}, Изменение: {course_change}")
+
+    await write_eventcoin(current_rate, 0.0)
+
+    return current_rate
+
+
+async def rate_update_loop():
+    try:
+        while True:
+            await asleep(3600)
+            await update_rate()
+    except CancelledError:
+        raise
 
 
 async def parse_bid_and_dice(message: Message) -> tuple[int, int] | None:
@@ -312,7 +381,9 @@ async def handle_clan_show(cur, load: Message, callback: CallbackQuery, bot: Bot
         link = hlink(user_row["name"], f'tg://user?id={user_row["id"]}')
         msg_text = profile_text(link, hbold, user_row, clan_row["name"])
 
-        keyboard = profile_clan_keyboard(target_id, user_row['id'], InlineKeyboardButton) if option == "member" else clan_owner_keyboard(owner, InlineKeyboardButton)
+        keyboard = profile_clan_keyboard(target_id, user_row['id'],
+                                         InlineKeyboardButton) if option == "member" else clan_owner_keyboard(owner,
+                                                                                                              InlineKeyboardButton)
 
     else:
         await cur.execute("SELECT name, id FROM users WHERE id = %s", (clan_row["owner"],))
@@ -327,17 +398,7 @@ async def handle_clan_show(cur, load: Message, callback: CallbackQuery, bot: Bot
         owner_link = hlink(owner_row["name"], f'tg://user?id={owner_row["id"]}')
         members = await get_clan_members(clan_id=clan_row['owner'])
         if option == "info":
-            msg_text = (
-                f"🏆 <b>Клан:</b> {clan_row['name']}:\n"
-                f"💵 <b>Бюджет:</b> {format_num(clan_row['money'])}$\n"
-                f"🛡 <b>Тип:</b> {'Закрытый' if clan_row['type'] == 0 else 'Открытый'}\n"
-                f"🚙 <b>Танки:</b> {clan_row['tanks']}\n"
-                f"🎯 <b>Артиллерии:</b> {clan_row['artillery']}\n"
-                f"🪖 <b>Пехота:</b> {clan_row['troops']}\n"
-                f"*️⃣ <b>Очки:</b> {format_num(clan_row['points'])}\n\n"
-                f"👑 <b>Владелец:</b> {owner_link}\n"
-                f"👥 <b>Участников:</b> {len(members)}\n"
-            )
+            msg_text = clan_text(clan_row, owner_link, members)
             keyboard = clan_keyboard(clan_row, InlineKeyboardButton)
 
         elif option == "peoples":
