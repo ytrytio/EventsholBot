@@ -2,7 +2,8 @@ from .vars import vip_rangs, clan_types, indexes
 
 __all__ = [
     "start_text", "balance_text", "farm_text_failure", "farm_text_success", "donate_text", "videocards_text_select",
-    "profile_text", "clans_text", "rich_text", "crypto_text", "clan_text", "rate_text",
+    "profile_text", "clans_text", "rich_text", "crypto_text", "clan_text", "rate_text", "shop_text",
+    "christmas_fair_text",
 
     "start_keyboard", "donate_keyboard", "shop_keyboard", "videocards_keyboard", "clan_keyboard",
     "profile_clan_keyboard", "clans_keyboard", "clan_peoples_keyboard", "clan_owner_keyboard", "top_keyboard"
@@ -51,17 +52,17 @@ def shop_keyboard(InlineKeyboardButton, ecoin):
         [
             InlineKeyboardButton(
                 text='⭐️ VIP - 1М$',
-                callback_data='pass_plus'),
+                callback_data='pass_vip'),
             InlineKeyboardButton(
                 text='➕ PLUS - 50М$',
                 callback_data='pass_plus')
         ],
         [
             InlineKeyboardButton(
-                text='🌟 ULTRA - 500M$',
+                text='🌟 ULTRA - 5B$',
                 callback_data='pass_ultra'),
             InlineKeyboardButton(
-                text='💠 QUANTUM - 10B$',
+                text='💠 QUANTUM - 100B$',
                 callback_data='pass_quantum')
         ],
         [
@@ -79,6 +80,21 @@ def shop_keyboard(InlineKeyboardButton, ecoin):
 
 
 def donate_keyboard(InlineKeyboardButton, prices):
+    ext_items = [
+        [
+            InlineKeyboardButton(
+                text=f'👑 Пропуск PRIME',
+                callback_data=f"donatevip_prime"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f'🎨 Свой префикс',
+                callback_data=f"donateprefix"
+            )
+        ]
+    ]
+
     keyboard = [
         [
             InlineKeyboardButton(
@@ -87,6 +103,9 @@ def donate_keyboard(InlineKeyboardButton, prices):
             )
         ] for i in range(len(prices))
     ]
+
+    keyboard = ext_items + keyboard
+
     return keyboard
 
 
@@ -195,13 +214,16 @@ def start_text(user_name: str):
 """
 
 
-def balance_text(cash: str, ecoins: str):
+def balance_text(cash: str, ecoins: str, value: int, level: int):
     """Форматирует текст баланса."""
     return f"""
 ✨💰 *Ваш Баланс* 💰✨
 
 💵 *Деньги:* {cash}
 💎 *ECoins:* {ecoins}
+
+❄️ *Ваши снежинки:* {value}
+🆙 *Уровень Кристаллизатора:* {level}
 
 🚀 *Заработайте больше* с помощью команды /farming!
 """
@@ -220,9 +242,10 @@ def farm_text_failure(time: int):
 """
 
 
-def farm_text_success(ecoins: float, vip: str, videocards: str, multiplier: int):
+def farm_text_success(ecoins: float, vip: str, videocards: str, multiplier: int, event_tokens: int = 0):
     """Форматирует текст для успешного получения дохода от майнинга."""
     from .funcs import format_num
+    event_text = f"\n❄️ *Ваш Кристаллизатор сгенерировал {event_tokens} снежинок!*\n" if event_tokens else ""
     return f"""
 💰 *Доход от Майнинга* 💰
 
@@ -230,7 +253,7 @@ def farm_text_success(ecoins: float, vip: str, videocards: str, multiplier: int)
 🌟 *Ваш пропуск:* {vip}  
 🖥 *Видеокарты:* {videocards}  
 ✖️ *Множитель:* {multiplier}  
-
+{event_text}
 💳 *Просмотреть баланс:* /cash.
 """
 
@@ -297,6 +320,14 @@ def clans_text():
     """
 
 
+def shop_text():
+    return f"""
+🛒 *Магазин* 🛒
+
+🛍️ *Выберите товар для покупки:* 
+"""
+
+
 def rich_text():
     return """
 <b>🤑 ТОП-10 самых богатых игроков ($) 🤑</b>
@@ -326,6 +357,14 @@ def rate_text(rate):
 ✨ <b>Примечание:</b> Курс обновляется в реальном времени в зависимости от обменных операций.
 """
     return text
+
+
+def christmas_fair_text():
+    return f"""
+🎄 *Новогодняя Ярмарка* 🎄
+
+🎁 *Выберите праздничный товар:* 
+"""
 
 
 # def videocards_buying_text():

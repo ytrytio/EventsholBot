@@ -14,9 +14,12 @@ from dotenv import dotenv_values
 from applib.strings import *
 from applib import *
 from aiopg import Cursor
-from random import randint
+from random import randint, choice
 from typing import Dict
 from signal import SIGINT, SIGTERM
+from re import IGNORECASE
+from html import escape
+import json
 
 from os import environ
 from google.cloud import dialogflow
@@ -66,7 +69,8 @@ cooldownPeriod = 5000
 
 
 # region ----- Without using DB
-@dp.message(F.text.regexp(r'^(\/start|меню)(\s|$)'))
+#@dp.message(F.text.regexp(r'^(\/start|меню)(\s|$)', flags=IGNORECASE))
+@dp.message(F.text.regexp(r'^(\/start(?:@[\w]+)?|меню)(\s|$)', flags=IGNORECASE))
 async def start(message: Message):
     user_name = message.from_user.first_name
 
@@ -85,7 +89,7 @@ async def start(message: Message):
                             parse_mode='HTML')
 
 
-@dp.message(F.text.regexp(r'^(\/ping|пинг)(\s|$)'))
+@dp.message(F.text.regexp(r'^(\/ping(?:@[\w]+)?|пинг)(\s|$)', flags=IGNORECASE))
 async def ping(message: Message):
     start_time = unixtime()
     try:
@@ -102,12 +106,12 @@ async def ping(message: Message):
         await bot.send_message(message.chat.id, f"Произошла ошибка: {str(e)}")
 
 
-@dp.message(F.text.startswith("/test") | F.text.lower().startswith('тест'))
-async def test(message: Message):
-    await bot.send_message(message.chat.id, f"Тест вывод: {1}")
+# @dp.message(F.text.startswith("/test") | F.text.lower().startswith('тест'))
+# async def test(message: Message):
+#     await bot.send_message(message.chat.id, f"Тест вывод: {1}")
 
 
-@dp.message(F.text.regexp(r'^(\/donate|донат)(\s|$)'))
+@dp.message(F.text.regexp(r'^(\/donate(?:@[\w]+)?|донат)(\s|$)', flags=IGNORECASE))
 async def donate(message: Message):
     try:
         assert message.from_user is not None
@@ -115,7 +119,8 @@ async def donate(message: Message):
         user_name = message.from_user.first_name
         if await check_flood_wait(user_id):
             warning = await message.reply(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, '
+                f'Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 parse_mode="HTML"
             )
             await asleep(3)
@@ -140,7 +145,7 @@ async def donate(message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'^(\/shop|магазин)(\s|$)'))
+@dp.message(F.text.regexp(r'^(\/shop(?:@[\w]+)?|магазин)(\s|$)', flags=IGNORECASE))
 async def shop(message: Message):
     assert message.from_user is not None
     user_id = message.from_user.id
@@ -149,7 +154,7 @@ async def shop(message: Message):
 
     if await check_flood_wait(user_id):
         warning = await message.reply(
-            f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, '
+            f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, '
             f'Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
             parse_mode="HTML"
         )
@@ -159,7 +164,7 @@ async def shop(message: Message):
 
     try:
         await message.reply(
-            start_text(user_name),
+            shop_text(),
             allow_sending_without_reply=True,
             parse_mode="markdown",
             reply_markup=InlineKeyboardMarkup(
@@ -173,7 +178,7 @@ async def shop(message: Message):
                             parse_mode='HTML')
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/rate|курс|екоин)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/rate(?:@[\w]+)?|курс|екоин)(\s|$)', flags=IGNORECASE))
 async def show_rate(message: Message):
     rate = await ecoin_to_bucks(1)
     await message.reply(
@@ -181,11 +186,84 @@ async def show_rate(message: Message):
         allow_sending_without_reply=True,
         parse_mode='HTML'
     )
+
+
+@dp.message(F.text.regexp(r'^(\/event(?:@[\w]+)?|ивент|ярмарка|рождество)(\s|$)', flags=IGNORECASE))
+async def christmas_fair(message: Message):
+    assert message.from_user is not None
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    ecoin = await ecoin_to_bucks(1)
+
+    if await check_flood_wait(user_id):
+        warning = await message.reply(
+            f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, '
+            f'Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+            parse_mode="HTML"
+        )
+        await asleep(3)
+        await bot.delete_message(warning.chat.id, warning.message_id)
+        return
+
+    try:
+        await message.reply(
+            christmas_fair_text(),
+            allow_sending_without_reply=True,
+            parse_mode="markdown",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=shop_keyboard(InlineKeyboardButton, ecoin)
+            )
+        )
+    except Exception as e:
+        await logf(e)
+        await message.reply(f"❌ Произошла ошибка!\n <code>{e}</code>",
+                            allow_sending_without_reply=True,
+                            parse_mode='HTML')
+
+
 # endregion
 
 
 # region ----- With using DB
-@dp.message(F.text.regexp(r'^(\/cash|баланс)(\s|$)'))
+@dp.channel_post()
+@with_db(False)
+async def handle_channel_post(cur: Cursor, load: Message, post: Message):
+    channel_id = -1001643266914
+    if post.chat.id != channel_id:
+        return
+
+    if post.text.startswith('/log'):
+        return
+
+    await cur.execute("SELECT id, posting FROM users")
+    users = await cur.fetchall()
+
+    message_id_to_forward = post.message_id
+    for user in users:
+        user_id, posting = user['id'], user['posting']
+        if posting == 0:
+            await logf(f"Пользователь {user_id} не подписан на рассылку.")
+        else:
+            try:
+                await bot.forward_message(user_id, channel_id, message_id_to_forward)
+                await logf(f"Сообщение отправлено пользователю {user_id}.")
+            except Exception as error:
+                await logf(f"Ошибка при пересылке сообщения пользователю с ID {user_id}: {error}")
+                await cur.execute("UPDATE users SET posting = 0 WHERE id = %s", (user_id,))
+
+    await cur.execute("SELECT id FROM groups")
+    groups = await cur.fetchall()
+
+    for group in groups:
+        group_id = group['id']
+        try:
+            await bot.forward_message(group_id, channel_id, message_id_to_forward)
+            await logf(f"Сообщение отправлено в группу {group_id}.")
+        except Exception as error:
+            await logf(f"Ошибка при пересылке сообщения в группу с ID {group_id}: {error}")
+
+
+@dp.message(F.text.regexp(r'^(\/cash(?:@[\w]+)?|баланс)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def get_cash(cur: Cursor, load: Message, message: Message):
     try:
@@ -194,7 +272,7 @@ async def get_cash(cur: Cursor, load: Message, message: Message):
         user_name = message.from_user.first_name
         if await check_flood_wait(user_id):
             await bot.edit_message_text(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 chat_id=load.chat.id,
                 message_id=load.message_id,
                 parse_mode="HTML"
@@ -204,7 +282,7 @@ async def get_cash(cur: Cursor, load: Message, message: Message):
             return
 
         await cur.execute(
-            "SELECT cash, goldfevervalue, bitcoins FROM users WHERE id=%s",
+            "SELECT cash, event, bitcoins, level FROM users WHERE id=%s",
             (user_id,))
 
         row = await cur.fetchone()
@@ -225,10 +303,12 @@ async def get_cash(cur: Cursor, load: Message, message: Message):
         cash_text = f"{cash} $"
         ecoins_text = f"{ecoin} ₠"
 
-        await bot.edit_message_text(balance_text(cash_text, ecoins_text),
-                                    chat_id=load.chat.id,
-                                    message_id=load.message_id,
-                                    parse_mode="markdown")
+        await bot.edit_message_text(
+            balance_text(cash_text, ecoins_text, row["event"], row["level"]),
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="markdown"
+        )
 
     except Exception as e:
         await bot.send_message(message.chat.id,
@@ -237,7 +317,7 @@ async def get_cash(cur: Cursor, load: Message, message: Message):
         raise e
 
 
-@dp.message(F.text.regexp(r'^(\/farming|фарм)(\s|$)'))
+@dp.message(F.text.regexp(r'^(\/farming(?:@[\w]+)?|фарм)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def farm(cur: Cursor, load: Message, message: Message):
     try:
@@ -247,7 +327,7 @@ async def farm(cur: Cursor, load: Message, message: Message):
 
         if await check_flood_wait(user_id):
             await bot.edit_message_text(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 chat_id=load.chat.id,
                 message_id=load.message_id,
                 parse_mode="HTML"
@@ -256,8 +336,9 @@ async def farm(cur: Cursor, load: Message, message: Message):
             await bot.delete_message(load.chat.id, load.message_id)
             return
 
+        # Получаем данные пользователя из базы
         await cur.execute(
-            "SELECT isvip, videocards, last_farming_time FROM users WHERE id = %s",
+            "SELECT isvip, videocards, last_farming_time, event, level FROM users WHERE id = %s",
             (message.from_user.id,))
         row = await cur.fetchone()
 
@@ -270,13 +351,15 @@ async def farm(cur: Cursor, load: Message, message: Message):
         last_farming_time = row['last_farming_time']
         time_now = unixtime()
 
+        # Проверка времени на фарм
         if time_now - last_farming_time < farming_timers[row['isvip']]:
             time_to_use = farming_timers[row['isvip']] - (time_now - last_farming_time)
-
-            await bot.edit_message_text(farm_text_failure(time_to_use),
-                                        chat_id=load.chat.id,
-                                        message_id=load.message_id,
-                                        parse_mode="markdown")
+            await bot.edit_message_text(
+                farm_text_failure(time_to_use),
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="markdown"
+            )
             return
 
         random_cash = int(randint(1000, 10000))
@@ -289,18 +372,26 @@ async def farm(cur: Cursor, load: Message, message: Message):
         rate, farmed_amount = await read_eventcoin()
         cryptocoins = random_cash / rate
 
+        tokens_received = generate_event_tokens(row['level'])
+
+        await cur.execute("UPDATE users SET event = event + %s WHERE id = %s", (tokens_received, user_id))
+
         farmed_amount += random_cash
         await write_eventcoin(rate, farmed_amount)
 
-        # Ответ пользователю
-        await bot.edit_message_text(farm_text_success(cryptocoins, is_vip,
-                                                      str(text_video),
-                                                      multiply_text),
-                                    chat_id=load.chat.id,
-                                    message_id=load.message_id,
-                                    parse_mode="markdown")
+        await bot.edit_message_text(
+            farm_text_success(
+                cryptocoins,
+                is_vip,
+                str(text_video),
+                multiply_text,
+                tokens_received),
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="markdown"
+        )
         await logf(
-            f"{message.from_user.first_name} - {format_time(int(time_now))}, Link - 'tg://user?id={message.from_user.id}"
+            f"{message.from_user.first_name} - {format_time(int(time_now))}, Link - 'tg://user?id={message.from_user.id}'"
         )
         await cur.execute(
             'UPDATE users SET last_farming_time = %s, bitcoins = bitcoins + %s WHERE id = %s',
@@ -315,7 +406,136 @@ async def farm(cur: Cursor, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/rich_top|топ богачей|топ богатых|богатые)(\s|$)'))
+@dp.message(F.text.regexp(r'^(\/quests(?:@[\w]+)?|квесты|задания)(\s|$)', flags=IGNORECASE))
+@with_db(True)
+async def quests(cur: Cursor, load: Message, message: Message):
+    try:
+        assert message.from_user is not None
+        user_id = message.from_user.id
+        user_name = message.from_user.first_name
+
+        # Проверка на флоуд
+        if await check_flood_wait(user_id):
+            await bot.edit_message_text(
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode="HTML"
+            )
+            await asleep(3)
+            await bot.delete_message(load.chat.id, load.message_id)
+            return
+
+        # Извлекаем квесты пользователя из базы данных
+        await cur.execute("SELECT quests FROM users WHERE id=%s", (user_id,))
+        row = await cur.fetchone()
+
+        if row is None:
+            await bot.edit_message_text(
+                "❌ Не найдено данных для пользователя.",
+                chat_id=load.chat.id,
+                message_id=load.message_id
+            )
+            return
+
+        if not await check_account(cur, message):
+            return
+
+        quests_data = row['quests'] or {'personal': {}, 'global': {}}
+
+        # Обработка личных квестов
+        for personal_quest in personal_quests:
+            difficulty = choice(personal_quest['difficulty'])
+            reward = personal_quest['reward'][personal_quest['difficulty'].index(difficulty)]
+
+            # Если квеста нет в данных, создаем новый
+            if personal_quest['name'] not in quests_data['personal']:
+                quest_id = await create_personal_quest(
+                    user_id=user_id,
+                    name=personal_quest['name'],
+                    description=personal_quest['description'].format(difficulty),
+                    reward=reward,
+                    action=personal_quest['action'],
+                    condition=difficulty,
+                    difficulty=[difficulty]
+                )
+                quests_data['personal'][quest_id] = {
+                    'is_completed': False,  # По умолчанию квест не завершен
+                    'condition': difficulty,
+                    'reward': reward,
+                    'name': personal_quest['name'],
+                    'description': personal_quest['description'],
+                    'action': personal_quest['action']
+                }
+
+        # Формирование текста с личными квестами
+        link = f'<a href="tg://user?id={message.from_user.id}">{escape(message.from_user.first_name)}</a>'
+        quests_info = f"📆 Доступные квесты для {link}:\n\n<blockquote expandable>📝 Личные квесты:\n\nПросмотреть / Скрыть\n"
+
+        if not quests_data['personal']:
+            quests_info += "Нет активных личных квестов.\n"
+        else:
+            for quest_id, quest_data in quests_data['personal'].items():
+                readiness = "✅ Выполнен" if quest_data['is_completed'] else "❌ Не выполнен"
+                quests_info += f"""
+{quest_data['name']}
+┣━ 🧾 {quest_data['description'].format(quest_data['condition'])}
+┣━ 🎁 Награда: {quest_data['reward']} Снежинок
+┗━ ✳️ Готовность: {readiness}
+"""
+        quests_info += "</blockquote>"
+
+        # Обработка глобальных квестов
+        await cur.execute("SELECT id, name, description, action, reward, condition, difficulty, is_completed FROM global_quests")
+        all_global_quests = await cur.fetchall()
+
+        quests_info += "\n<blockquote expandable><b>🌍 Глобальные квесты</b>\n\nПросмотреть / Скрыть\n"
+        if not all_global_quests:
+            quests_info += "❌ Нет активных глобальных квестов.\n"
+        else:
+            for quest in all_global_quests:
+                is_completed = await check_quest_completion(
+                    quest_id=quest['id'],
+                    user_id=user_id,
+                    is_personal=False
+                )
+                readiness = "✅ Выполнен" if is_completed else "❌ Не выполнен"
+
+                # Обновляем данные о квестах в случае выполнения
+                if is_completed:
+                    snowflakes_reward = quest['reward']
+                    await cur.execute("UPDATE users SET event = event + %s WHERE id = %s", (snowflakes_reward, user_id))
+                    quests_info += f"""
+{quest['name']}
+┣━ 🧾 {quest['description'].format(quest['condition'])}
+┣━ 🎁 Награда: {snowflakes_reward} Снежинок
+┗━ ✳️ Готовность: {readiness} (Снежинки: {snowflakes_reward})
+"""
+                else:
+                    quests_info += f"""
+{quest['name']}
+┣━ 🧾 {quest['description'].format(quest['condition'])}
+┣━ 🎁 Награда: {quest['reward']} Снежинок
+┗━ ✳️ Готовность: {readiness}
+"""
+        quests_info += "</blockquote>"
+
+        await bot.edit_message_text(
+            quests_info,
+            chat_id=load.chat.id,
+            message_id=load.message_id,
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        # Обработка ошибок
+        await bot.send_message(message.chat.id,
+                               f"❌ Произошла ошибка!\n <code>{e}</code>",
+                               parse_mode="HTML")
+        raise e
+
+
+@dp.message(F.text.regexp(r'(?i)^(\/rich_top(?:@[\w]+)?|топ богачей|топ богатых|богатые)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def rich_top(cur, load: Message, message: Message):
     try:
@@ -324,7 +544,7 @@ async def rich_top(cur, load: Message, message: Message):
         user_name = message.from_user.first_name
         if await check_flood_wait(user_id):
             await bot.edit_message_text(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 chat_id=load.chat.id,
                 message_id=load.message_id,
                 parse_mode="HTML"
@@ -356,7 +576,7 @@ async def rich_top(cur, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/crypto_top|топ крипта|топ майнеры|майнеры)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/crypto_top(?:@[\w]+)?|топ крипта|топ майнеры|майнеры)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def rich_top(cur, load: Message, message: Message):
     try:
@@ -365,7 +585,7 @@ async def rich_top(cur, load: Message, message: Message):
         user_name = message.from_user.first_name
         if await check_flood_wait(user_id):
             await bot.edit_message_text(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 chat_id=load.chat.id,
                 message_id=load.message_id,
                 parse_mode="HTML"
@@ -397,7 +617,7 @@ async def rich_top(cur, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/dice|кубик|кости)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/dice(?:@[\w]+)?|кубик|кости)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def dice(cur, load: Message, message: Message):
     try:
@@ -415,7 +635,8 @@ async def dice(cur, load: Message, message: Message):
 
         if await check_flood_wait(user_id):
             warning = await message.reply(
-                f"🚫 <a href=tg://user?id={user_id}>{first_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
+                f"🚫 <a href=tg://user?id={user_id}>{escape(first_name)}</a>, "
+                f"Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.",
                 parse_mode="HTML"
             )
             await asleep(3)
@@ -440,7 +661,8 @@ async def dice(cur, load: Message, message: Message):
                     )
                 else:
                     await bot.edit_message_text(
-                        "🚫 *Недостаточно денег!* 💸\nПожалуйста, внесите средства на свой счёт, чтобы продолжить игру.",
+                        "🚫 *Недостаточно денег!* 💸\n"
+                        "Пожалуйста, внесите средства на свой счёт, чтобы продолжить игру.",
                         chat_id=load.chat.id,
                         message_id=load.message_id,
                         parse_mode="markdown"
@@ -482,13 +704,18 @@ async def dice(cur, load: Message, message: Message):
             value = spin.dice.value
 
             if value == dice_value:
-                result_text = f"🎉 *Везение!* \n\nВы выиграли: +{bid}💸\n\n💰 Ваш баланс теперь: {format_num(balance + bid)}$"
+                result_text = (
+                    f"🎉 *Везение!* \n\nВы выиграли: +{format_num(bid)}💸\n\n"
+                    f"💰 Ваш баланс теперь: {format_num(balance + bid)}$"
+                )
                 await cur.execute(
                     "UPDATE users SET cash = cash + %s WHERE id = %s",
                     (bid, user_id)
                 )
             else:
-                result_text = f"😞 *Мимо!* \n\nВы проиграли: -{bid}💸\n\n💰 Ваш баланс теперь: {format_num(balance - bid)}$"
+                result_text = (
+                    f"😞 *Мимо!* \n\nВы проиграли: -{format_num(bid)}💸\n\n"
+                    f"💰 Ваш баланс теперь: {format_num(balance - bid)}$")
                 await cur.execute(
                     "UPDATE users SET cash = cash - %s WHERE id = %s",
                     (bid, user_id)
@@ -518,7 +745,11 @@ async def dice(cur, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/basketball|\/darts|\/football|\/bowling|баскетбол|дартс|футбол|боулинг)(\s|$)'))
+@dp.message(F.text.regexp(
+    r'(?i)^(\/basketball(?:@[\w]+)?|\/darts(?:@[\w]+)?|\/football(?:@[\w]+)?|\/bowling(?:@['
+    r'\w]+)?|\/spin(?:@[\w]+)?|баскетбол|дартс|футбол|боулинг|спин|казино)(\s|$)',
+    flags=IGNORECASE)
+)
 @with_db(True)
 async def game_handler(cur, load: Message, message: Message):
     try:
@@ -588,8 +819,9 @@ async def game_handler(cur, load: Message, message: Message):
             await asleep(4)
             await cur.execute(
                 "UPDATE users SET cash = cash + %s WHERE id = %s",
-                (bid, user_id)
+                (nb, user_id)
             )
+
             await bot.send_message(
                 message.chat.id,
                 obtaining,
@@ -609,7 +841,7 @@ async def game_handler(cur, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/profile|профиль)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/profile(?:@[\w]+)?|профиль)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def profile(cur: Cursor, load: Message, message: Message):
     try:
@@ -618,7 +850,7 @@ async def profile(cur: Cursor, load: Message, message: Message):
         user_name = message.from_user.first_name
         if await check_flood_wait(user_id):
             await bot.edit_message_text(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 chat_id=load.chat.id,
                 message_id=load.message_id,
                 parse_mode="HTML"
@@ -663,9 +895,9 @@ async def profile(cur: Cursor, load: Message, message: Message):
             current_clan = clan_data["name"] if clan_data else "нет"
 
         user_name = message.reply_to_message.from_user.first_name if message.reply_to_message else f"@{username}"
-        link = hlink(user_name, f'tg://user?id={user['id']}')
+        link = hlink(user_name, f'tg://user?id={user["id"]}')
         """profile_result = (
-            f"👤 {hlink(user_name, f'tg://user?id={user['id']}')}"
+            f"👤 {hlink(user_name, f'tg://user?id={user["id"]}')}"
             f"\n<b>Профиль</b> пользователя {hbold(user['name'])}: \n"
             f"\n🏰 Клан: {hbold(current_clan)}"
             f"\n🏷 Префикс: {hbold(user['tag'])}"
@@ -676,13 +908,13 @@ async def profile(cur: Cursor, load: Message, message: Message):
             f"\n🖥 Видеокарты: {user['videocards']} шт."
             f"\n🪪 Пропуск: {vip_rangs[user['isvip']]}"
         )"""
-        profile_result = profile_text(hlink(user_name, f'tg://user?id={user['id']}'), hbold, user, current_clan)
+        profile_result = profile_text(hlink(user_name, f'tg://user?id={user["id"]}'), hbold, user, current_clan)
 
         invite_keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="✉️ Пригласить в клан", callback_data=f"clan_invite_{user['id']}")]
             ] if user["clan"] == 0 else [
-                [InlineKeyboardButton(text=f"🏰 {current_clan}", callback_data=f"clan_show_info_{user["clan"]}")]
+                [InlineKeyboardButton(text=f"🏰 {current_clan}", callback_data=f'clan_show_info_{user["clan"]}')]
             ]
         )
 
@@ -703,7 +935,7 @@ async def profile(cur: Cursor, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/clans|кланы)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/clans(?:@[\w]+)?|кланы)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def top_clans(cur: Cursor, load: Message, message: Message):
     try:
@@ -712,7 +944,7 @@ async def top_clans(cur: Cursor, load: Message, message: Message):
         user_name = message.from_user.first_name
         if await check_flood_wait(user_id):
             await bot.edit_message_text(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 chat_id=load.chat.id,
                 message_id=load.message_id,
                 parse_mode="HTML"
@@ -744,7 +976,7 @@ async def top_clans(cur: Cursor, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/clan|клан|мой клан)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/clan(?:@[\w]+)?|клан|мой клан)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def clan(cur: Cursor, load: Message, message: Message):
     try:
@@ -753,7 +985,7 @@ async def clan(cur: Cursor, load: Message, message: Message):
         user_name = message.from_user.first_name
         if await check_flood_wait(user_id):
             await bot.edit_message_text(
-                f'🚫 <a href="tg://user?id={user_id}">{user_name}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
+                f'🚫 <a href="tg://user?id={user_id}">{escape(user_name)}</a>, Вы отправляете слишком много сообщений. Пожалуйста, подождите немного.',
                 chat_id=load.chat.id,
                 message_id=load.message_id,
                 parse_mode="HTML"
@@ -795,7 +1027,7 @@ async def clan(cur: Cursor, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/buyCrypto|купить крипту|купить екоин)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/buyCrypto(?:@[\w]+)?|купить крипту|купить екоин)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def buy_crypto(cur: Cursor, load: Message, message: Message):
     try:
@@ -859,7 +1091,7 @@ async def buy_crypto(cur: Cursor, load: Message, message: Message):
         await logf(e)
 
 
-@dp.message(F.text.regexp(r'(?i)^(\/sellCrypto|продать крипту|продать екоин)(\s|$)'))
+@dp.message(F.text.regexp(r'(?i)^(\/sellCrypto(?:@[\w]+)?|продать крипту|продать екоин)(\s|$)', flags=IGNORECASE))
 @with_db(True)
 async def sell_crypto(cur: Cursor, load: Message, message: Message):
     try:
@@ -1013,10 +1245,27 @@ async def donate_videocards(callback: CallbackQuery):
     )
 
 
+@dp.callback_query(lambda c: c.data == 'donateprefix')
+async def donate_videocards(callback: CallbackQuery):
+    await bot.answer_callback_query(callback.id, "В разработке...")
+    """
+    price = filter_dict(prices, vid_id)
+    await bot.send_invoice(
+        callback.message.chat.id, title=f"🖥 {price.label}",
+        description='Купи больше видеокарт для своей майнинг фермы несмотря на лимит!',
+        # provider_token='410694247:TEST:d26cecc4-1321-4cb9-b23f-b385f5d0594f',
+        currency='XTR',
+        prices=[price],
+        start_parameter=f'vid{vid_id}',
+        payload=price.label
+    )
+    """
+
+
 @dp.callback_query(lambda c: c.data == 'commands')
 async def list_commands(callback: CallbackQuery):
     user = callback.from_user
-    list_message = f'🚀 <a href="tg://user?id={user.id}">{user.first_name}</a> вызывает список команд.\n\n'
+    list_message = f'🚀 <a href="tg://user?id={user.id}">{escape(user.first_name)}</a> вызывает список команд.\n\n'
     for command in commands:
         head = command.split("-")[0]
         value = command.split("-")[1]
@@ -1029,15 +1278,134 @@ async def list_commands(callback: CallbackQuery):
 
 
 @dp.callback_query(lambda c: c.data.startswith('buyvid'))
-@with_db(lambda c: len(c.data.split('_')) > 1)
+@with_db(lambda c, **kwargs: len(c.data.split('_')) == 1)
 async def buy_videocards(cur: Cursor, load: Message, callback: CallbackQuery, *args: Any, **kwargs: Any):
     try:
         assert callback.from_user is not None
+        load = callback.message if callback.message.chat.type == "private" else load
+
         await cur.execute(
-            "SELECT videocards FROM users WHERE id=%s",
-            (callback.from_user.id,))
+            "SELECT cash, videocards, isvip, quests FROM users WHERE id=%s",
+            (callback.from_user.id,)
+        )
+        row = await cur.fetchone()
+
+        if not row:
+            await bot.edit_message_text(
+                "❌ Не найдено данных для пользователя.",
+                chat_id=load.chat.id,
+                message_id=load.message_id)
+            return
+
+        cash = row["cash"]
+        videocards = row["videocards"]
+        eventpass = row["isvip"]
+        quests = row.get("quests", {})
+
+        if not await check_account(cur, callback):
+            return
+
+        link = f'<a href="tg://user?id={callback.from_user.id}">{escape(callback.from_user.first_name)}</a>'
+        vid_value = None
+        if len(callback.data.split('_')) > 1:
+            vid_value = int(callback.data.split('_')[1])
+            user_id = int(callback.data.split('_')[2])
+
+            price = sum_videocards(vid_value, videocards, factor)
+
+            if callback.from_user.id != user_id:
+                await bot.answer_callback_query(
+                    callback.id,
+                    "⛔️ Эта кнопка предназначена не для Вас!",
+                    show_alert=True
+                )
+            else:
+                if videocards + vid_value >= max_videocards[eventpass]:
+                    return await bot.answer_callback_query(
+                        callback.id,
+                        f"❌ Вы не можете купить {vid_value} видеокарт! \nВаш лимит будет превышен.",
+                        show_alert=True
+                    )
+
+                if cash < price:
+                    return await bot.answer_callback_query(
+                        callback.id,
+                        f"❌ Вы не можете купить {vid_value} видеокарт! \nУ Вас недостаточно денег.",
+                        show_alert=True
+                    )
+
+                await cur.execute(
+                    "UPDATE users SET cash=cash-%s, videocards=videocards+%s WHERE id=%s",
+                    (price, vid_value, callback.from_user.id,)
+                )
+
+                for quest_id, quest in quests.get("personal", {}).items():
+                    quest_data = await cur.execute(
+                        "SELECT action, condition, reward FROM personal_quests WHERE id = %s AND user_id = %s",
+                        (quest_id, callback.from_user.id)
+                    )
+                    quest_row = await cur.fetchone()
+
+                    if quest_row and quest_row["action"] == "buy_videocards" and not quest["is_completed"]:
+                        quest["progress"] += vid_value
+                        if quest["progress"] >= quest_row["condition"]:
+                            quest["is_completed"] = True
+                            await cur.execute(
+                                "UPDATE users SET event=event+%s WHERE id=%s",
+                                (quest_row["reward"], callback.from_user.id)
+                            )
+
+                await cur.execute(
+                    "UPDATE users SET quests=%s WHERE id=%s",
+                    (json.dumps(quests), callback.from_user.id)
+                )
+
+                await bot.answer_callback_query(
+                    callback.id,
+                    f"✅ Успешно куплено {vid_value} видеокарт!",
+                    show_alert=True
+                )
+        else:
+            await bot.edit_message_text(
+                text=videocards_text_select(link),
+                chat_id=load.chat.id,
+                message_id=load.message_id,
+                parse_mode='html',
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=videocards_keyboard(
+                        InlineKeyboardButton,
+                        factor,
+                        row["videocards"],
+                        callback.from_user.id
+                    )
+                )
+            )
+
+        await bot.answer_callback_query(callback.id)
+    except Exception as e:
+        await bot.send_message(
+            callback.message.chat.id,
+            f"❌ Произошла ошибка!\n <code>{e}</code>",
+            parse_mode='HTML'
+        )
+        raise e
+
+
+@dp.callback_query(lambda c: c.data.startswith('pass'))
+@with_db(lambda c, **kwargs: len(c.data.split('_')) == 1)
+async def buy_pass(cur: Cursor, load: Message, callback: CallbackQuery, *args: Any, **kwargs: Any):
+    try:
+        assert callback.from_user is not None
+        load = callback.message if callback.message.chat.type == "private" else load
+
+        await cur.execute(
+            "SELECT cash, isvip FROM users WHERE id=%s",
+            (callback.from_user.id,)
+        )
 
         row = await cur.fetchone()
+        cash = row["cash"]
+        eventpass = row["isvip"]
 
         if row is None:
             await bot.edit_message_text(
@@ -1049,37 +1417,43 @@ async def buy_videocards(cur: Cursor, load: Message, callback: CallbackQuery, *a
         if not await check_account(cur, callback):
             return
 
-        link = f'<a href="tg://user?id={callback.from_user.id}">{callback.from_user.first_name}</a>'
-        vid_value = None
-        if len(callback.data.split('_')) > 1:
-            vid_value = callback.data.split('_')[1]
-            user_id = int(callback.data.split('_')[2])
-            if callback.from_user.id != user_id:
-                await bot.answer_callback_query(
-                    callback.id,
-                    "⛔️ Эта кнопка предназначена не для Вас!",
-                    show_alert=True
-                )
-            else:
-                await bot.edit_message_text(
-                    text=f"Количество: {vid_value}",
-                    chat_id=load.chat.id,
-                    message_id=load.message_id,
-                    parse_mode='html'
-                )
+        link = f'<a href="tg://user?id={callback.from_user.id}">{escape(callback.from_user.first_name)}</a>'
+        helpers = ['none', 'vip', 'plus', 'ultra', 'quantum']
+        vip = callback.data.split('_')[1]
+
+        if vip in helpers:
+            vip_index = helpers.index(vip)
         else:
-            await bot.edit_message_text(
-                text=videocards_text_select(link),
-                chat_id=load.chat.id,
-                message_id=load.message_id,
-                parse_mode='html',
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=videocards_keyboard(InlineKeyboardButton, factor, row["videocards"],
-                                                        callback.from_user.id)
-                )
+            vip_index = -1
+
+        vip_title = vip_rangs[vip_index]
+        price = vip_prices[vip_index]
+
+        if vip_index <= eventpass:
+            return await bot.answer_callback_query(
+                callback.id,
+                f"❌ Вы не можете купить пропуск {vip_title}! \nПоищите себе пропуск получше.",
+                show_alert=True
             )
 
-        await bot.answer_callback_query(callback.id)
+        if cash < price:
+            return await bot.answer_callback_query(
+                callback.id,
+                f"❌ Вы не можете купить пропуск {vip_title}! \nУ Вас недостаточно денег.",
+                show_alert=True
+            )
+
+        await cur.execute(
+            "UPDATE users SET cash=cash-%s, isvip=%s WHERE id=%s",
+            (price, vip_index, callback.from_user.id,)
+        )
+
+        await bot.answer_callback_query(
+            callback.id,
+            f"✅ Успешно куплен пропуск {vip_title}!",
+            show_alert=True
+        )
+
     except Exception as e:
         await bot.send_message(
             callback.message.chat.id,
@@ -1095,7 +1469,7 @@ async def decoration(callback: CallbackQuery):
 
 
 @dp.callback_query(lambda c: c.data.startswith('clan'))
-@with_db(lambda c: c.message.chat.type != "private")
+@with_db(lambda c, **kwargs: c.message.chat.type != "private")
 async def clan_handler(cur, load: Message, callback: CallbackQuery):
     """Обрабатывает запросы для отображения информации о клане или пользователе."""
     try:
@@ -1137,7 +1511,7 @@ async def clan_handler(cur, load: Message, callback: CallbackQuery):
 
 
 @dp.callback_query(lambda c: c.data.startswith('profile'))
-@with_db(lambda c: c.message.chat.type != "private")
+@with_db(lambda c, **kwargs: c.message.chat.type != "private")
 async def profile_handler(cur, load: Message, callback: CallbackQuery):
     try:
         assert callback.from_user is not None
@@ -1165,11 +1539,11 @@ async def profile_handler(cur, load: Message, callback: CallbackQuery):
             inline_keyboard=[
                 [InlineKeyboardButton(text="✉️ Пригласить в клан", callback_data=f"clan_invite_{user['id']}")]
             ] if user["clan"] == 0 else [
-                [InlineKeyboardButton(text=f"🏰 {current_clan}", callback_data=f"clan_show_info_{user["clan"]}")]
+                [InlineKeyboardButton(text=f"🏰 {current_clan}", callback_data=f'clan_show_info_{user["clan"]}')]
             ]
         )
 
-        link = hlink(user["name"], f'tg://user?id={user['id']}')
+        link = hlink(user["name"], f'tg://user?id={user["id"]}')
 
         await bot.edit_message_text(
             profile_text(link, hbold, user, current_clan),
@@ -1186,6 +1560,96 @@ async def profile_handler(cur, load: Message, callback: CallbackQuery):
             f"❌ Произошла ошибка!\n<code>{e}</code>",
             parse_mode="HTML"
         )
+        raise e
+# endregion
+
+
+# region ADMIN
+@dp.message(F.text.regexp(r'^(\/update_quests)(\s|$)', flags=IGNORECASE))
+@with_db(True)
+async def update_quests(cur: Cursor, load: Message, message: Message):
+    try:
+        if not await is_admin(message.from_user.id):
+            return
+
+        for global_quest in global_quests:
+            difficulty = choice(global_quest['difficulty'])
+            reward = global_quest['reward'][global_quest['difficulty'].index(difficulty)]
+
+            await cur.execute("SELECT COUNT(*) FROM global_quests WHERE name = %s", (global_quest['name'],))
+            existing_quest_count = await cur.fetchone()
+
+            if existing_quest_count[0] == 0:
+                await create_global_quest(
+                    name=global_quest['name'],
+                    description=global_quest['description'].format(difficulty),
+                    reward=reward,
+                    action=global_quest['action'],
+                    condition=difficulty,
+                    difficulty=[difficulty]
+                )
+
+        await cur.execute("SELECT id, isvip, quests, videocards FROM users")
+        users = await cur.fetchall()
+
+        for user in users:
+            user_id = user['id']
+            vip_status = user['isvip']
+            quests_data = user['quests'] or {"personal": {}, "global": {}}
+            videocards = user['videocards']
+
+            helpers = ['none', 'vip', 'plus', 'ultra', 'quantum']
+            vip_index = helpers.index(vip_status) if vip_status in helpers else -1
+
+            max_videocards_limit = max_videocards[vip_index] if vip_index >= 0 else 0
+
+            if videocards +  <= max_videocards_limit:
+                for personal_quest in personal_quests:
+                    difficulty = choice(personal_quest['difficulty'])
+                    reward = personal_quest['reward'][personal_quest['difficulty'].index(difficulty)]
+
+                    if personal_quest['name'] not in quests_data['personal']:
+                        quest_id = await create_personal_quest(
+                            user_id=user_id,
+                            name=personal_quest['name'],
+                            description=personal_quest['description'].format(difficulty),
+                            reward=reward,
+                            action=personal_quest['action'],
+                            condition=difficulty,
+                            difficulty=[difficulty]
+                        )
+                        quests_data['personal'][quest_id] = {
+                            'is_completed': False,
+                            'difficulty': difficulty,
+                            'reward': reward,
+                            'name': personal_quest['name'],
+                            'description': personal_quest['description'],
+                            'action': personal_quest['action']
+                        }
+
+            for global_quest in global_quests:
+                difficulty = choice(global_quest['difficulty'])
+                reward = global_quest['reward'][global_quest['difficulty'].index(difficulty)]
+
+                quests_data['global'][global_quest['name']] = {
+                    'is_completed': False,
+                    'difficulty': difficulty,
+                    'reward': reward,
+                    'name': global_quest['name'],
+                    'description': global_quest['description'].format(difficulty),
+                    'action': global_quest['action']
+                }
+
+            await cur.execute("UPDATE users SET quests = %s WHERE id = %s", (json.dumps(quests_data), user_id))
+
+        await bot.edit_message_text(
+            "✅ Квесты успешно обновлены для пользователей!",
+            chat_id=load.chat.id,
+            message_id=load.message_id
+        )
+
+    except Exception as e:
+        await bot.send_message(message.chat.id, f"❌ Произошла ошибка при обновлении квестов: {e}")
         raise e
 # endregion
 

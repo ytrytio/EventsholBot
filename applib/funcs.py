@@ -6,12 +6,14 @@ from aiopg import create_pool, Cursor
 from datetime import datetime, timedelta
 from aiofiles import open as aiopen
 from time import time as unixtime
+from random import random
 from dotenv import dotenv_values
 from psycopg2.extras import DictCursor
 from re import sub, escape
 from functools import wraps
 from asyncio import sleep as asleep
 from asyncio import CancelledError
+import json
 
 from .vars import log_file, event_coin_file, slot_machine_multipliers, emoji_multipliers, MESSAGE_LIMIT, TIME_FRAME
 from .types import Any
@@ -21,7 +23,8 @@ __all__ = ["logf", "with_db", "check_account", "format_num", "format_time", "fil
            "read_eventcoin", "parse_bid_and_dice", "validate_bid", "validate_dice_value", "send_error_reply",
            "check_flood_wait", "get_result", "get_emoji", "set_clan_budget", "set_clan_type", "set_clan_name",
            "handle_clan_set", "handle_clan_show", "get_clan_members", "write_eventcoin", "rate_update_loop",
-           "ecoin_to_bucks", "bucks_to_ecoin"]
+           "ecoin_to_bucks", "bucks_to_ecoin", "sum_videocards", "generate_event_tokens", "is_admin",
+           "create_global_quest", "create_personal_quest", "complete_quest", "check_quest_completion"]
 
 secrets: dict[str, str | None] = dotenv_values('.env')
 
@@ -62,6 +65,7 @@ def with_db(send_load: bool | Callable[..., bool]):
                         break
                     elif isinstance(arg, CallbackQuery):
                         message = arg.message
+                        break
 
                 if message:
                     loading = await message.reply(
@@ -121,15 +125,27 @@ async def check_account(cur: Cursor, *args: Any) -> bool:
 
         await cur.execute("""
             INSERT INTO users 
-            (id, mention, name, cash, last_farming_time, isvip, farmLimit, videocards, viruses, stopFarm, attacker, clan, goldfevervalue, posting, bitcoins, tag) 
+            (id, mention, name, cash, last_farming_time, isvip, "farmLimit", videocards, viruses, "stopFarm", attacker,
+            clan, event, posting, bitcoins, tag, password, registered, level) 
             VALUES 
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             user.id, "", user.first_name, 20000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            1, "[ИГРОК]"
+            1, "[ИГРОК]", 0, 0
         ))
 
     return True
+
+
+async def is_admin(user_id: int) -> bool:
+    admin_ids = [1432248216]
+    return user_id in admin_ids
+
+
+def sum_videocards(amount: int, gpus: int, factor: float):
+    base_cost = 50000
+    total_cost = (base_cost * amount) + (gpus * factor)
+    return total_cost
 
 
 def format_time(seconds: float):
@@ -279,7 +295,7 @@ async def get_emoji(command):
         "/football": "⚽", "футбол": "⚽",
         "/bowling": "🎳", "боулинг": "🎳",
         "/dice": "🎲", "кубик": "🎲", "кость": "🎲",
-        "/spin": "🎰", "спин": "🎰"
+        "/spin": "🎰", "спин": "🎰", "казино": "🎰"
     }
     return emoji_map.get(command, "")
 
@@ -303,16 +319,16 @@ async def get_result(emoji, value, bid, balance):
             nb = 0
             obt = f"⚖️ *Нейтраль!* 🤷‍♂️\n\nВаша ставка осталась при вас.\n\n💰 Ваш баланс: {format_num(balance + nb)}💸"
         case 1.5:
-            nb = result
+            nb = result - bid
             obt = f"🍀 *Везение!* 🎉\n\nВы выиграли: *+{format_num(result)}* 💵\n\n💰 Ваш баланс теперь: {format_num(balance + nb)}💸"
         case 2.0:
-            nb = result
+            nb = result - bid
             obt = f"🤠 *Выигрыш!* 🎊\n\nВы получили: *+{format_num(result)}* 💸\n\n💰 Ваш баланс теперь: {format_num(balance + nb)}💸"
         case 3.5:
-            nb = result
+            nb = result - bid
             obt = f"🏆 *Крупный выигрыш!* 🎊\n\nВы получили: *+{format_num(result)}* 💸\n\n💰 Ваш баланс теперь: {format_num(balance + nb)}💸"
         case 10.0:
-            nb = result
+            nb = result - bid
             obt = f"🤑 *ДЖЕКПОТ!* 🚀\n\nВы выиграли: *+{format_num(result)}* 🤑\n\n💰 Ваш баланс теперь: {format_num(balance + nb)}💸"
 
     return obt, nb
@@ -446,3 +462,78 @@ async def set_clan_budget(cur, callback: CallbackQuery, amount: int, bot: Bot):
     await cur.execute("UPDATE clans SET money = money + %s WHERE owner = %s", (amount, callback.from_user.id))
     await cur.execute("UPDATE users SET cash = cash - %s WHERE id = %s", (amount, callback.from_user.id))
     await bot.send_message(callback.message.chat.id, f"✅ Бюджет клана пополнен на {amount}$!")
+
+
+def generate_event_tokens(user_level: int) -> int:
+    base_tokens = 5 + user_level * 3
+
+    token_chance = user_level * 0.1
+
+    if random() < token_chance:
+        return base_tokens
+    else:
+        return 0
+
+
+@with_db(False)
+async def create_global_quest(cur: Cursor, load: None, name: str, description: str, reward: int, action: str,
+                              condition: int, difficulty: list[int]):
+    result = await cur.execute(
+        """
+        INSERT INTO global_quests (name, description, reward, action, condition, difficulty) 
+        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+        """, (name, description, reward, action, condition, difficulty)
+    )
+    return result['id'] if result else None
+
+
+@with_db(False)
+async def create_personal_quest(cur: Cursor, load: None, user_id: int, name: str, description: str, reward: int,
+                                action: str, condition: int, difficulty: list[int]):
+    result = await cur.execute(
+        """
+        INSERT INTO personal_quests (user_id, name, description, reward, action, condition, difficulty) 
+        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+        """, (user_id, name, description, reward, action, condition, difficulty)
+    )
+    return result['id'] if result else None
+
+
+@with_db(False)
+async def check_quest_completion(cur: Cursor, load: None, quest_id: int, user_id: int, is_personal: bool):
+    table = 'personal_quests' if is_personal else 'global_quests'
+    await cur.execute(f"SELECT condition, is_completed FROM {table} WHERE id = %s", (quest_id,))
+    quest = await cur.fetchone()
+
+    if not quest:
+        return False
+
+    condition = quest['condition']
+    is_completed = quest['is_completed']
+
+    if is_completed:
+        return True
+
+    await cur.execute("SELECT event FROM users WHERE id = %s", (user_id,))
+    user = await cur.fetchone()
+
+    if user and user['event'] >= condition:
+        await cur.execute(f"UPDATE {table} SET is_completed = TRUE WHERE id = %s", (quest_id,))
+        return True
+
+    return False
+
+
+@with_db(True)
+async def complete_quest(cur: Cursor, load: None, quest_id: int, user_id: int, is_personal: bool):
+    if await check_quest_completion(cur, quest_id, user_id, is_personal):
+        table = 'personal_quests' if is_personal else 'global_quests'
+        reward_column = 'reward'
+
+        await cur.execute(f"UPDATE {table} SET is_completed = TRUE WHERE id = %s AND user_id = %s",
+                          (quest_id, user_id) if is_personal else (quest_id,))
+
+        await cur.execute(f"SELECT {reward_column} FROM {table} WHERE id = %s", (quest_id,))
+        reward = (await cur.fetchone())[reward_column]
+
+        await cur.execute("UPDATE users SET event = event + %s WHERE id = %s", (reward, user_id))
