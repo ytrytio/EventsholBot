@@ -6,25 +6,31 @@ from aiopg import create_pool, Cursor
 from datetime import datetime, timedelta
 from aiofiles import open as aiopen
 from time import time as unixtime
-from random import random
+from random import random, choice, sample, randint
 from dotenv import dotenv_values
 from psycopg2.extras import DictCursor
 from re import sub, escape
 from functools import wraps
 from asyncio import sleep as asleep
 from asyncio import CancelledError
+from uuid import uuid4
 import json
 
-from .vars import log_file, event_coin_file, slot_machine_multipliers, emoji_multipliers, MESSAGE_LIMIT, TIME_FRAME
+from .vars import (
+    log_file, event_coin_file, slot_machine_multipliers, emoji_multipliers, MESSAGE_LIMIT, TIME_FRAME, global_quests
+)
+
 from .types import Any
 from .strings import profile_text, clan_text, profile_clan_keyboard, clan_peoples_keyboard, clan_owner_keyboard
 
-__all__ = ["logf", "with_db", "check_account", "format_num", "format_time", "filter_dict", "text2mdv2",
-           "read_eventcoin", "parse_bid_and_dice", "validate_bid", "validate_dice_value", "send_error_reply",
-           "check_flood_wait", "get_result", "get_emoji", "set_clan_budget", "set_clan_type", "set_clan_name",
-           "handle_clan_set", "handle_clan_show", "get_clan_members", "write_eventcoin", "rate_update_loop",
-           "ecoin_to_bucks", "bucks_to_ecoin", "sum_videocards", "generate_event_tokens", "is_admin",
-           "create_global_quest", "create_personal_quest", "complete_quest", "check_quest_completion"]
+__all__ = [
+    "logf", "with_db", "check_account", "format_num", "format_time", "filter_dict", "text2mdv2",
+    "read_eventcoin", "parse_bid_and_dice", "validate_bid", "validate_dice_value", "send_error_reply",
+    "check_flood_wait", "get_result", "get_emoji", "set_clan_budget", "set_clan_type", "set_clan_name",
+    "handle_clan_set", "handle_clan_show", "get_clan_members", "write_eventcoin", "rate_update_loop",
+    "ecoin_to_bucks", "bucks_to_ecoin", "sum_videocards", "generate_event_tokens", "is_admin",
+    "generate_quests", "generate_quests_for_users", "update_quest", "get_quests"
+]
 
 secrets: dict[str, str | None] = dotenv_values('.env')
 
@@ -300,7 +306,7 @@ async def get_emoji(command):
     return emoji_map.get(command, "")
 
 
-async def get_result(emoji, value, bid, balance):
+async def get_result(emoji, value, bid, balance, user_id):
     obt = ""
     nb = 0
     if emoji == "🎰":
@@ -330,6 +336,9 @@ async def get_result(emoji, value, bid, balance):
         case 10.0:
             nb = result - bid
             obt = f"🤑 *ДЖЕКПОТ!* 🚀\n\nВы выиграли: *+{format_num(result)}* 🤑\n\n💰 Ваш баланс теперь: {format_num(balance + nb)}💸"
+            await update_quest(user_id, "gambling", 1)
+
+    await update_quest(user_id, "spent", bid)
 
     return obt, nb
 
@@ -464,76 +473,142 @@ async def set_clan_budget(cur, callback: CallbackQuery, amount: int, bot: Bot):
     await bot.send_message(callback.message.chat.id, f"✅ Бюджет клана пополнен на {amount}$!")
 
 
-def generate_event_tokens(user_level: int) -> int:
-    base_tokens = 5 + user_level * 3
-
-    token_chance = user_level * 0.1
-
-    if random() < token_chance:
-        return base_tokens
-    else:
+def generate_event_tokens(user_level: int, boost: float) -> int:
+    if user_level == 0:
         return 0
 
+    min_tokens = 3 + user_level
+    max_tokens = 6 + user_level * 2
+
+    total = randint(min_tokens, max_tokens)
+    total += total * boost
+
+    return total
+
 
 @with_db(False)
-async def create_global_quest(cur: Cursor, load: None, name: str, description: str, reward: int, action: str,
-                              condition: int, difficulty: list[int]):
-    result = await cur.execute(
+async def generate_quests(cur: Cursor, loading: None) -> None:
+    await cur.execute("DELETE FROM quests")
+    for quest in global_quests:
+        name = quest["name"]
+        description = quest["description"]
+        action = quest["action"]
+        difficulty = choice(quest["difficulty"])
+        difficulty_index = quest["difficulty"].index(difficulty)
+        reward = quest["reward"][difficulty_index]
+
+        await cur.execute(
+            """
+            INSERT INTO quests
+            (name, description, action, difficulty, reward)
+            VALUES
+            (%s, %s, %s, %s, %s)
+            """,
+            (name, description, action, difficulty, reward)
+        )
+
+
+@with_db(False)
+async def generate_quests_for_users(cur: Cursor, loading: None) -> None:
+    await cur.execute("DELETE FROM user_quests")
+
+    await generate_quests()
+
+    await cur.execute("SELECT id FROM users")
+    all_users = await cur.fetchall()
+
+    await cur.execute("SELECT id, name, description, action, difficulty, reward FROM quests")
+    all_quests = await cur.fetchall()
+
+    insert_values = []
+    for user in all_users:
+        user_id = user["id"]
+        for quest in all_quests:
+            quest_id = quest["id"]
+            insert_values.append(f"({user_id}, {quest_id}, 0, FALSE)")
+
+    if insert_values:
+        insert_query = f"""
+        INSERT INTO user_quests (user_id, quest_id, progress, is_completed)
+        VALUES {','.join(insert_values)};
         """
-        INSERT INTO global_quests (name, description, reward, action, condition, difficulty) 
-        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
-        """, (name, description, reward, action, condition, difficulty)
-    )
-    return result['id'] if result else None
+        await cur.execute(insert_query)
 
 
 @with_db(False)
-async def create_personal_quest(cur: Cursor, load: None, user_id: int, name: str, description: str, reward: int,
-                                action: str, condition: int, difficulty: list[int]):
-    result = await cur.execute(
+async def update_quest(cur: Cursor, load: None, user_id: int, action: str, value: int):
+    await cur.execute(
         """
-        INSERT INTO personal_quests (user_id, name, description, reward, action, condition, difficulty) 
-        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-        """, (user_id, name, description, reward, action, condition, difficulty)
+        SELECT uq.progress, uq.is_completed, q.difficulty, q.id as quest_id
+        FROM user_quests uq
+        JOIN quests q ON uq.quest_id = q.id
+        WHERE uq.user_id = %s AND q.action = %s
+        """,
+        (user_id, action)
     )
-    return result['id'] if result else None
+    user_quest = await cur.fetchone()
+
+    if not user_quest:
+        return
+
+    progress = user_quest["progress"]
+    completed = user_quest["is_completed"]
+    difficulty = user_quest["difficulty"]
+    quest_id = user_quest["quest_id"]
+
+    if not completed and progress + value >= difficulty:
+        progress = difficulty
+        completed = True
+    elif not completed and progress + value < difficulty:
+        progress += value
+
+    await cur.execute(
+        "UPDATE user_quests SET progress=%s, is_completed=%s WHERE user_id=%s AND quest_id=%s",
+        (progress, completed, user_id, quest_id)
+    )
 
 
 @with_db(False)
-async def check_quest_completion(cur: Cursor, load: None, quest_id: int, user_id: int, is_personal: bool):
-    table = 'personal_quests' if is_personal else 'global_quests'
-    await cur.execute(f"SELECT condition, is_completed FROM {table} WHERE id = %s", (quest_id,))
-    quest = await cur.fetchone()
+async def get_quests(cur: Cursor, load: None, user_id: int, link: str):
+    await cur.execute("SELECT * FROM quests")
+    all_quests = await cur.fetchall()
 
-    if not quest:
-        return False
+    quests_info = f"""
+    📆 Доступные квесты для {link}:
 
-    condition = quest['condition']
-    is_completed = quest['is_completed']
+    <blockquote expandable>🌍 <b>Ежедневные квесты:</b>
 
-    if is_completed:
-        return True
+    Просмотреть / Скрыть
+    """
 
-    await cur.execute("SELECT event FROM users WHERE id = %s", (user_id,))
-    user = await cur.fetchone()
+    for quest in all_quests:
+        quest_id = quest["id"]
+        name = quest["name"]
+        description = quest["description"]
+        action = quest["action"]
+        difficulty = quest["difficulty"]
+        reward = quest["reward"]
 
-    if user and user['event'] >= condition:
-        await cur.execute(f"UPDATE {table} SET is_completed = TRUE WHERE id = %s", (quest_id,))
-        return True
+        await cur.execute(
+            "SELECT progress, is_completed FROM user_quests WHERE user_id=%s AND quest_id=%s",
+            (user_id, quest_id)
+        )
+        user_quest = await cur.fetchone()
 
-    return False
+        if not user_quest:
+            continue
 
+        progress = user_quest["progress"]
+        completed = user_quest["is_completed"]
 
-@with_db(True)
-async def complete_quest(cur: Cursor, load: None, quest_id: int, user_id: int, is_personal: bool):
-    if await check_quest_completion(cur, quest_id, user_id, is_personal):
-        table = 'personal_quests' if is_personal else 'global_quests'
-        reward_column = 'reward'
+        quests_info += f"""
+    {name}
+    ┣━ 🧾 {description.format(format_num(difficulty) if action == "spent" else difficulty)}
+    ┣━ 🎁 Награда: {reward} ❄️
+    ┣━ 📊 Прогресс: {format_num(progress) if action == "spent" else progress}/{format_num(difficulty) if action == "spent" else difficulty}
+    ┗━ ✳️ Готовность: {"✅ Выполнен" if completed else "❌ Не выполнен"}\n
+    """
 
-        await cur.execute(f"UPDATE {table} SET is_completed = TRUE WHERE id = %s AND user_id = %s",
-                          (quest_id, user_id) if is_personal else (quest_id,))
+    quests_info += "</blockquote>"
 
-        await cur.execute(f"SELECT {reward_column} FROM {table} WHERE id = %s", (quest_id,))
-        reward = (await cur.fetchone())[reward_column]
-
-        await cur.execute("UPDATE users SET event = event + %s WHERE id = %s", (reward, user_id))
+    return quests_info

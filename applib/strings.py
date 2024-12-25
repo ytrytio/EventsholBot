@@ -6,7 +6,8 @@ __all__ = [
     "christmas_fair_text",
 
     "start_keyboard", "donate_keyboard", "shop_keyboard", "videocards_keyboard", "clan_keyboard",
-    "profile_clan_keyboard", "clans_keyboard", "clan_peoples_keyboard", "clan_owner_keyboard", "top_keyboard"
+    "profile_clan_keyboard", "clans_keyboard", "clan_peoples_keyboard", "clan_owner_keyboard", "top_keyboard",
+    "christmas_fair_keyboard"
 ]
 
 
@@ -205,6 +206,41 @@ def top_keyboard(users_row, InlineKeyboardButton, symbol):
     return keyboard
 
 
+def christmas_fair_keyboard(InlineKeyboardButton):
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text='🆙 Улучшение Кристаллизатора',
+                callback_data='upgrade_crystallise')
+        ],
+        [
+            InlineKeyboardButton(
+                text='🔤 [САНТА] - 500 ❄️',
+                callback_data='prefix_santa'),
+            InlineKeyboardButton(
+                text='🔤 [ГРИНЧ] - 500 ❄️',
+                callback_data='prefix_grinch')
+        ],
+        [
+            InlineKeyboardButton(
+                text='🔤 [СНЕГОВИК] - 200 ❄️',
+                callback_data='prefix_snowman'),
+            InlineKeyboardButton(
+                text='🔤 [ЭЛЬФ] - 250 ❄️',
+                callback_data='prefix_elf')
+        ],
+        [
+            InlineKeyboardButton(
+                text='🚀 +15% БУСТ - 150 ❄️',
+                callback_data='boost_15'),
+            InlineKeyboardButton(
+                text='🚀 +30% БУСТ - 300 ❄️',
+                callback_data='boost_30')
+        ]
+    ]
+    return keyboard
+
+
 def start_text(user_name: str):
     """Форматирует стартовый текст."""
     return f"""
@@ -242,10 +278,12 @@ def farm_text_failure(time: int):
 """
 
 
-def farm_text_success(ecoins: float, vip: str, videocards: str, multiplier: int, event_tokens: int = 0):
+def farm_text_success(ecoins: float, vip: str, videocards: str, multiplier: int, boost: float, event_tokens: int = 0):
     """Форматирует текст для успешного получения дохода от майнинга."""
     from .funcs import format_num
-    event_text = f"\n❄️ *Ваш Кристаллизатор сгенерировал {event_tokens} снежинок!*\n" if event_tokens else ""
+    event_text = f"\n❄️ *Ваш Кристаллизатор сгенерировал {event_tokens} снежинок!*" if event_tokens else ""
+    boost_text = f"\n🚀 Активен {boost * 100}% буст!\n" if boost else ""
+
     return f"""
 💰 *Доход от Майнинга* 💰
 
@@ -254,6 +292,7 @@ def farm_text_success(ecoins: float, vip: str, videocards: str, multiplier: int,
 🖥 *Видеокарты:* {videocards}  
 ✖️ *Множитель:* {multiplier}  
 {event_text}
+{boost_text}
 💳 *Просмотреть баланс:* /cash.
 """
 
@@ -362,6 +401,10 @@ def rate_text(rate):
 def christmas_fair_text():
     return f"""
 🎄 *Новогодняя Ярмарка* 🎄
+
+🆙 - Улучшение
+🔤 - Префикс
+🚀 - Буст майнинг фермы (на время события)
 
 🎁 *Выберите праздничный товар:* 
 """
